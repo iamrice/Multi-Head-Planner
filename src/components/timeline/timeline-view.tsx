@@ -12,7 +12,7 @@ import {
   getTodayCST,
 } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
-import { signInWithEmail, signUpWithEmail } from "@/app/actions/auth";
+import { signInFromClient, signUpFromClient } from "@/app/actions/auth";
 
 const CELL_WIDTH = 80;
 const TOTAL_DAYS = 120;
@@ -315,22 +315,22 @@ export function TimelineView() {
   // 登录表单提交
   const handleLogin = useCallback(async () => {
     setLoginFormError("");
-    setLoginFormFormPending(true);
-    try {
-      const formData = new FormData();
-      formData.append("email", loginFormEmail);
-      formData.append("password", loginFormPassword);
-      const result = loginFormMode === "login"
-        ? await signInWithEmail({}, formData)
-        : await signUpWithEmail({}, formData);
-      if (result?.error) {
-        setLoginFormError(result.error);
-      }
-      // 登录成功后会被 middleware 重定向，页面会刷新
-    } catch (err) {
-      setLoginFormError("操作失败，请重试");
+    if (!loginFormEmail || !loginFormPassword) {
+      setLoginFormError("请填写邮箱与密码");
+      return;
     }
+    setLoginFormFormPending(true);
+    const result = loginFormMode === "login"
+      ? await signInFromClient(loginFormEmail, loginFormPassword)
+      : await signUpFromClient(loginFormEmail, loginFormPassword);
     setLoginFormFormPending(false);
+
+    if (result.error) {
+      setLoginFormError(result.error);
+    } else {
+      // 成功：刷新页面让 middleware 重新校验登录状态
+      window.location.reload();
+    }
   }, [loginFormEmail, loginFormPassword, loginFormMode]);
 
   // 今日线位置
