@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { addDays, formatShortDate, formatWeekday, isWeekend, isSameDay, getTodayCST } from "@/lib/utils";
+import { useTimelineStore } from "@/stores/timeline-store";
 
 interface DateHeaderProps {
   viewportStart: Date;
@@ -9,9 +10,9 @@ interface DateHeaderProps {
   scrollLeft: number;
 }
 
-const CELL_WIDTH = 80;
-
 export function DateHeader({ viewportStart, totalDays, scrollLeft }: DateHeaderProps) {
+  const cellWidth = useTimelineStore((s) => s.cellWidth);
+
   const dates = useMemo(() => {
     return Array.from({ length: totalDays }, (_, i) => addDays(viewportStart, i));
   }, [viewportStart, totalDays]);
@@ -31,7 +32,7 @@ export function DateHeader({ viewportStart, totalDays, scrollLeft }: DateHeaderP
           <div
             key={i}
             className="shrink-0 border-r border-[var(--border-light)] flex flex-col items-center justify-center py-1"
-            style={{ width: CELL_WIDTH }}
+            style={{ width: cellWidth }}
           >
             <span
               className={`text-[10px] leading-tight ${

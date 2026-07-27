@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 
-interface DailyCellProps {
+interface EditableCellProps {
   content: string;
   completed: boolean;
   isLastRow: boolean;
@@ -10,9 +10,17 @@ interface DailyCellProps {
   onExpandRow?: () => void;
 }
 
-export function DailyCell({ content, completed, isLastRow, onUpdate, onExpandRow }: DailyCellProps) {
+/**
+ * 可编辑单元格 - 用于每日记录和待办清单
+ * - 单击即可编辑
+ * - 编辑时 checkbox 始终可见
+ * - 支持 IME 拼音输入（composing 状态下回车不触发提交）
+ * - hover 时显示完整文字 tooltip
+ */
+export function EditableCell({ content, completed, isLastRow, onUpdate, onExpandRow }: EditableCellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(content);
+  const [composing, setComposing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -21,7 +29,6 @@ export function DailyCell({ content, completed, isLastRow, onUpdate, onExpandRow
     }
   }, [editing]);
 
-  // 外部 content 更新时同步 draft
   useEffect(() => {
     if (!editing) {
       setDraft(content);
@@ -37,7 +44,6 @@ export function DailyCell({ content, completed, isLastRow, onUpdate, onExpandRow
     const trimmed = draft.trim();
     if (trimmed !== content) {
       onUpdate({ content: trimmed });
-      // 如果是最后一行且输入了内容，自动扩展新行
       if (isLastRow && trimmed && onExpandRow) {
         onExpandRow();
       }
@@ -46,7 +52,7 @@ export function DailyCell({ content, completed, isLastRow, onUpdate, onExpandRow
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter") {
+    if (e.key === "Enter" && !composing) {
       e.preventDefault();
       commitEdit();
     }
@@ -57,8 +63,8 @@ export function DailyCell({ content, completed, isLastRow, onUpdate, onExpandRow
   }
 
   return (
-    <div className="w-full h-full flex items-center gap-1 px-0.5 group/cell">
-      {/* Checkbox - 始终可见 */}
+    <div className="w-full h-full flex items-center gap-1 px-0.5">
+      {/* Checkbox */}
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -84,7 +90,7 @@ export function DailyCell({ content, completed, isLastRow, onUpdate, onExpandRow
         )}
       </button>
 
-      {/* 文本区域 */}
+      {/* 文本 */}
       {editing ? (
         <input
           ref={inputRef}
@@ -92,11 +98,14 @@ export function DailyCell({ content, completed, isLastRow, onUpdate, onExpandRow
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commitEdit}
           onKeyDown={handleKeyDown}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => setComposing(false)}
           className="flex-1 min-w-0 text-xs bg-white border border-[var(--today-color)] outline-none rounded px-1 h-5"
         />
       ) : (
         <span
           onClick={startEditing}
+          title={content || undefined}
           className={`flex-1 min-w-0 text-xs truncate cursor-text rounded px-1 h-5 leading-5 ${
             completed ? "line-through text-[var(--text-subtle)]" : ""
           } hover:bg-black/[0.03] transition-colors`}
