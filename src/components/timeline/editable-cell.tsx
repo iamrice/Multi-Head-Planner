@@ -16,6 +16,8 @@ interface EditableCellProps {
  * - 编辑时 checkbox 始终可见
  * - 支持 IME 拼音输入（composing 状态下回车不触发提交）
  * - hover 时显示完整文字 tooltip
+ * - 空内容禁止打勾
+ * - 空内容不上传数据库
  */
 export function EditableCell({ content, completed, isLastRow, onUpdate, onExpandRow }: EditableCellProps) {
   const [editing, setEditing] = useState(false);
@@ -42,6 +44,13 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
 
   function commitEdit() {
     const trimmed = draft.trim();
+
+    // #11: 空内容不上传，也不触发 expand
+    if (!trimmed) {
+      setEditing(false);
+      return;
+    }
+
     if (trimmed !== content) {
       onUpdate({ content: trimmed });
       if (isLastRow && trimmed && onExpandRow) {
@@ -62,18 +71,25 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
     }
   }
 
+  // #12: 空内容禁止打勾
+  const canToggle = !!content;
+
   return (
     <div className="w-full h-full flex items-center gap-1 px-0.5">
-      {/* Checkbox */}
+      {/* Checkbox - 空内容时禁用 */}
       <button
         onClick={(e) => {
           e.stopPropagation();
-          onUpdate({ completed: !completed });
+          if (canToggle) {
+            onUpdate({ completed: !completed });
+          }
         }}
         className={`shrink-0 w-3.5 h-3.5 rounded-sm border flex items-center justify-center transition-colors ${
           completed
             ? "bg-[var(--today-color)] border-[var(--today-color)]"
-            : "border-[#c8c8c8] hover:border-[var(--today-color)]"
+            : canToggle
+              ? "border-[#c8c8c8] hover:border-[var(--today-color)]"
+              : "border-[#e0e0e0] opacity-40 cursor-not-allowed"
         }`}
       >
         {completed && (

@@ -32,7 +32,7 @@ export interface TodoItemData {
 interface DragState {
   isDragging: boolean;
   cardId: string | null;
-  type: "move" | "resize-left" | "resize-right" | null;
+  type: "reorder" | "resize-left" | "resize-right" | null;
   startX: number;
   startY: number;
   originalStartDate: string | null;
@@ -60,6 +60,7 @@ interface TimelineState {
   addCard: (card: CardData) => void;
   updateCard: (id: string, updates: Partial<CardData>) => void;
   deleteCard: (id: string) => void;
+  reorderCard: (cardId: string, newRowPosition: number) => void;
   updateDailyRecord: (cardId: string, date: string, rowIndex: number, updates: Partial<DailyRecordData>) => void;
   addDailyRecordRow: (cardId: string, date: string) => void;
   updateTodoItem: (cardId: string, rowIndex: number, updates: Partial<TodoItemData>) => void;
@@ -78,9 +79,39 @@ interface TimelineState {
 
 const ROW_HEIGHT = 24;
 const TITLE_HEIGHT = 28;
-const CARD_ROW_GAP = 8;
+const CARD_ROW_GAP = 12;
+const TODO_HEADER_HEIGHT = 20;
 
-export { ROW_HEIGHT, TITLE_HEIGHT, CARD_ROW_GAP };
+export { ROW_HEIGHT, TITLE_HEIGHT, CARD_ROW_GAP, TODO_HEADER_HEIGHT };
+
+/** 某日期的可见行数（含底部空输入行） */
+export function getDailyRowsForDate(card: CardData, date: string): number {
+  const maxRow = card.daily_records
+    .filter((r) => r.date === date)
+    .reduce((max, r) => Math.max(max, r.row_index + 1), 0);
+  // 有内容则 maxRow >= 1，再加 1 行空输入；无内容则 maxRow=0，加 1 行空输入 → 最少 1 行
+  return maxRow + 1;
+}
+
+/** 计算一张 Card 的实际像素高度（与渲染完全一致） */
+export function getCardHeight(card: CardData): number {
+  // 每个日期列的行数 = getDailyRowsForDate，取最大值
+  const rowsByDate: Record<string, number> = {};
+  card.daily_records.forEach((r) => {
+    rowsByDate[r.date] = Math.max(rowsByDate[r.date] || 0, r.row_index + 1);
+  });
+  // 所有日期的可见行数（含空输入行）
+  const allDateRowCounts = Object.keys(rowsByDate).length > 0
+    ? Object.entries(rowsByDate).map(([, maxRow]) => maxRow + 1)
+    : [1]; // 无记录时至少 1 行
+  const maxDailyRows = Math.max(...allDateRowCounts);
+
+  // 待办行数（含空输入行）
+  const maxTodoRow = card.todo_items.reduce((max, t) => Math.max(max, t.row_index + 1), 0);
+  const todoRows = maxTodoRow + 1; // 至少 1 行空输入
+
+  return TITLE_HEIGHT + maxDailyRows * ROW_HEIGHT + 2 + TODO_HEADER_HEIGHT + todoRows * ROW_HEIGHT + 4;
+}
 
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   cards: [],
@@ -114,6 +145,20 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   deleteCard: (id) =>
     set((state) => ({ cards: state.cards.filter((c) => c.id !== id) })),
 
+  // #10: 重排卡片顺序
+  reorderCard: (cardId, newRowPosition) =>
+    set((state) => {
+      const sorted = [...state.cards].sort((a, b) => a.row_position - b.row_position);
+      const idx = sorted.findIndex((c) => c.id === cardId);
+      if (idx === -1) return state;
+      const [card] = sorted.splice(idx, 1);
+      sorted.splice(newRowPosition, 0, card);
+      // 重新编号
+      return {
+        cards: sorted.map((c, i) => ({ ...c, row_position: i })),
+      };
+    }),
+
   updateDailyRecord: (cardId, date, rowIndex, updates) =>
     set((state) => ({
       cards: state.cards.map((card) => {
@@ -129,6 +174,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
             ),
           };
         } else {
+          // #11: 不创建空内容的记录
+          if (updates.content === "" || updates.content === undefined) return card;
           const newRecord: DailyRecordData = {
             id: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             card_id: cardId,
@@ -146,22 +193,11 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set((state) => ({
       cards: state.cards.map((card) => {
         if (card.id !== cardId) return card;
-        const existingMaxRow = card.daily_records
-          .filter((r) => r.date === date)
-          .reduce((max, r) => Math.max(max, r.row_index), -1);
-        const newRecord: DailyRecordData = {
-          id: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          card_id: cardId,
-          date,
-          row_index: existingMaxRow + 1,
-          content: "",
-          completed: false,
-        };
-        return { ...card, daily_records: [...card.daily_records, newRecord] };
+        // 不在 store 中创建空行 — 空行由渲染逻辑自动展示
+        return card;
       }),
     })),
 
-  // Todo Item 操作
   updateTodoItem: (cardId, rowIndex, updates) =>
     set((state) => ({
       cards: state.cards.map((card) => {
@@ -175,6 +211,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
             ),
           };
         } else {
+          // #11: 不创建空内容的记录
+          if (updates.content === "" || updates.content === undefined) return card;
           const newItem: TodoItemData = {
             id: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             card_id: cardId,
@@ -191,27 +229,19 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set((state) => ({
       cards: state.cards.map((card) => {
         if (card.id !== cardId) return card;
-        const maxIdx = card.todo_items.reduce((max, t) => Math.max(max, t.row_index), -1);
-        const newItem: TodoItemData = {
-          id: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          card_id: cardId,
-          row_index: maxIdx + 1,
-          content: "",
-          completed: false,
-        };
-        return { ...card, todo_items: [...card.todo_items, newItem] };
+        // 不在 store 中创建空行 — 空行由渲染逻辑自动展示
+        return card;
       }),
     })),
 
-  // 将待办条目移到每日记录：删除原 todo，在目标日期创建 daily_record
   moveTodoToDaily: (cardId, todoRowIndex, targetDate) =>
     set((state) => ({
       cards: state.cards.map((card) => {
         if (card.id !== cardId) return card;
         const todoItem = card.todo_items.find((t) => t.row_index === todoRowIndex);
-        if (!todoItem) return card;
+        if (!todoItem || !todoItem.content) return card;
 
-        // 从 todo_items 中删除该项，并重新编号后续项
+        // 从 todo_items 中删除该项，重新编号
         const remainingTodos = card.todo_items
           .filter((t) => t.row_index !== todoRowIndex)
           .map((t) => ({
@@ -250,15 +280,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     const cellWidth = state.cellWidth;
     const dayOffset = Math.round(dx / cellWidth);
 
-    // 固定行高估算
-    const rowOffset = Math.round(dy / 80);
-
-    if (dragState.type === "move" && dragState.originalStartDate) {
+    if (dragState.type === "reorder" && dragState.originalStartDate) {
+      // 只改水平位置（起始日期），垂直方向由 reorder 控制
       const newStart = addDays(parseDate(dragState.originalStartDate), dayOffset);
-      return {
-        start_date: formatDateUtil(newStart),
-        row_position: dragState.originalRowPosition + rowOffset,
-      };
+      return { start_date: formatDateUtil(newStart) };
     }
 
     if (dragState.type === "resize-left" && dragState.originalStartDate) {

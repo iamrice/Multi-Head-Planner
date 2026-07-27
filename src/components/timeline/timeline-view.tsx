@@ -4,7 +4,7 @@ import { useCallback, useRef, useMemo, useEffect, useState } from "react";
 import { DateHeader } from "./date-header";
 import { TimelineCard } from "./card";
 import { TodayLine } from "./today-line";
-import { useTimelineStore, type CardData, type DailyRecordData, type TodoItemData } from "@/stores/timeline-store";
+import { useTimelineStore, type CardData, type DailyRecordData, type TodoItemData, CARD_ROW_GAP, getCardHeight } from "@/stores/timeline-store";
 import {
   addDays,
   parseDate,
@@ -48,6 +48,7 @@ export function TimelineView() {
     addCard,
     updateCard,
     deleteCard,
+    reorderCard,
     updateDailyRecord,
     addDailyRecordRow,
     updateTodoItem,
@@ -85,33 +86,31 @@ export function TimelineView() {
           if (cardsData && cardsData.length > 0) {
             const cardIds = cardsData.map((c: { id: string }) => c.id);
 
-            // daily_records 查询（独立容错）
             let recordsData: unknown[] | null = null;
             try {
               const r = await supabase.from("daily_records").select("*").in("card_id", cardIds);
               recordsData = r.data;
-            } catch { /* 表可能不存在 */ }
+            } catch { /* */ }
 
-            // todo_items 查询（独立容错）
             let todosData: unknown[] | null = null;
             try {
               const t = await supabase.from("todo_items").select("*").in("card_id", cardIds);
               todosData = t.data;
-            } catch { /* 表可能不存在 */ }
+            } catch { /* */ }
 
             const recordsByCard: Record<string, unknown[]> = {};
             (recordsData || []).forEach((r) => {
               const rec = r as Record<string, unknown>;
-              const cardId = rec.card_id as string;
-              if (!recordsByCard[cardId]) recordsByCard[cardId] = [];
-              recordsByCard[cardId]!.push(r);
+              const cid = rec.card_id as string;
+              if (!recordsByCard[cid]) recordsByCard[cid] = [];
+              recordsByCard[cid]!.push(r);
             });
             const todosByCard: Record<string, unknown[]> = {};
             (todosData || []).forEach((t) => {
               const rec = t as Record<string, unknown>;
-              const cardId = rec.card_id as string;
-              if (!todosByCard[cardId]) todosByCard[cardId] = [];
-              todosByCard[cardId]!.push(t);
+              const cid = rec.card_id as string;
+              if (!todosByCard[cid]) todosByCard[cid] = [];
+              todosByCard[cid]!.push(t);
             });
 
             setCards(
@@ -122,8 +121,8 @@ export function TimelineView() {
                 duration_days: c.duration_days as number,
                 row_position: c.row_position as number,
                 color_index: c.color_index as number,
-                daily_records: (recordsByCard[c.id as string] || []) as DailyRecordData[],
-                todo_items: (todosByCard[c.id as string] || []) as TodoItemData[],
+                daily_records: ((recordsByCard[c.id as string] || []) as DailyRecordData[]).filter((r) => r.content !== ""),
+                todo_items: ((todosByCard[c.id as string] || []) as TodoItemData[]).filter((t) => t.content !== ""),
               })),
             );
           } else {
@@ -158,10 +157,9 @@ export function TimelineView() {
       if ((e.target as HTMLElement).closest("[data-card]")) return;
       const rect = scrollRef.current.getBoundingClientRect();
       const x = e.clientX - rect.left + scrollRef.current.scrollLeft;
-      const y = e.clientY - rect.top;
       const dayOffset = Math.floor(x / cellWidth);
       const startDate = addDays(viewportStart, dayOffset);
-      const rowPosition = Math.floor(y / 88);
+      const rowPosition = cards.length;
       const colorIndex = cards.length;
 
       if (isLoggedIn) {
@@ -199,15 +197,52 @@ export function TimelineView() {
     }, [deleteCard, isLoggedIn],
   );
 
+  // #10: reorder
+  const handleReorderCard = useCallback(
+    async (cardId: string, newRowPosition: number) => {
+      reorderCard(cardId, newRowPosition);
+      if (isLoggedIn) {
+        try {
+          // 更新所有卡片的 row_position
+          const supabase = createClient();
+          const state = useTimelineStore.getState();
+          for (const c of state.cards) {
+            await supabase.from("cards").update({ row_position: c.row_position }).eq("id", c.id);
+          }
+        } catch { /* */ }
+      }
+    }, [reorderCard, isLoggedIn],
+  );
+
+  // #13: 修复 DB 更新逻辑 - 用记录 ID 来更新而非匹配 card_id+date+row_index
   const handleUpdateDailyRecord = useCallback(
     async (cardId: string, date: string, rowIndex: number, updates: { content?: string; completed?: boolean }) => {
       updateDailyRecord(cardId, date, rowIndex, updates);
       if (isLoggedIn) {
         try {
           const supabase = createClient();
-          const { data: existing } = await supabase.from("daily_records").select("id").eq("card_id", cardId).eq("date", date).eq("row_index", rowIndex).maybeSingle();
-          if (existing) { await supabase.from("daily_records").update(updates).eq("id", existing.id); }
-          else { await supabase.from("daily_records").insert({ card_id: cardId, date, row_index: rowIndex, ...updates }); }
+          // 从 store 获取当前记录（可能已有真实 ID）
+          const state = useTimelineStore.getState();
+          const card = state.cards.find((c) => c.id === cardId);
+          const record = card?.daily_records.find((r) => r.date === date && r.row_index === rowIndex);
+
+          if (record && record.id && !record.id.startsWith("temp-")) {
+            // 有真实 ID → 直接更新
+            await supabase.from("daily_records").update(updates).eq("id", record.id);
+          } else {
+            // 无真实 ID → 尝试按 card_id+date+row_index 查找
+            const { data: existing } = await supabase.from("daily_records").select("id").eq("card_id", cardId).eq("date", date).eq("row_index", rowIndex).maybeSingle();
+            if (existing) {
+              await supabase.from("daily_records").update(updates).eq("id", existing.id);
+            } else if (updates.content) {
+              // #11: 只在有内容时插入
+              const { data: inserted } = await supabase.from("daily_records").insert({ card_id: cardId, date, row_index: rowIndex, ...updates }).select().single();
+              // 将真实 ID 写回 store
+              if (inserted) {
+                useTimelineStore.getState().updateDailyRecord(cardId, date, rowIndex, { id: inserted.id } as Partial<DailyRecordData>);
+              }
+            }
+          }
         } catch { /* */ }
       }
     }, [updateDailyRecord, isLoggedIn],
@@ -216,28 +251,36 @@ export function TimelineView() {
   const handleAddDailyRow = useCallback(
     async (cardId: string, date: string) => {
       addDailyRecordRow(cardId, date);
-      if (isLoggedIn) {
-        try {
-          const supabase = createClient();
-          const { data: existing } = await supabase.from("daily_records").select("row_index").eq("card_id", cardId).eq("date", date);
-          const maxRow = (existing || []).reduce((max: number, r: { row_index: number }) => Math.max(max, r.row_index), -1);
-          await supabase.from("daily_records").insert({ card_id: cardId, date, row_index: maxRow + 1, content: "", completed: false });
-        } catch { /* */ }
-      }
-    }, [addDailyRecordRow, isLoggedIn],
+      // #11: 不在 DB 中插入空行，用户输入内容时再插入
+    }, [addDailyRecordRow],
   );
 
-  // Todo 操作
+  // #13: 同样修复 todo_items
   const handleUpdateTodoItem = useCallback(
     async (cardId: string, rowIndex: number, updates: { content?: string; completed?: boolean }) => {
       updateTodoItem(cardId, rowIndex, updates);
       if (isLoggedIn) {
         try {
           const supabase = createClient();
-          const { data: existing } = await supabase.from("todo_items").select("id").eq("card_id", cardId).eq("row_index", rowIndex).maybeSingle();
-          if (existing) { await supabase.from("todo_items").update(updates).eq("id", existing.id); }
-          else { await supabase.from("todo_items").insert({ card_id: cardId, row_index: rowIndex, ...updates }); }
-        } catch { /* 表可能不存在 */ }
+          const state = useTimelineStore.getState();
+          const card = state.cards.find((c) => c.id === cardId);
+          const item = card?.todo_items.find((t) => t.row_index === rowIndex);
+
+          if (item && item.id && !item.id.startsWith("temp-")) {
+            await supabase.from("todo_items").update(updates).eq("id", item.id);
+          } else {
+            const { data: existing } = await supabase.from("todo_items").select("id").eq("card_id", cardId).eq("row_index", rowIndex).maybeSingle();
+            if (existing) {
+              await supabase.from("todo_items").update(updates).eq("id", existing.id);
+            } else if (updates.content) {
+              // #11: 只在有内容时插入
+              const { data: inserted } = await supabase.from("todo_items").insert({ card_id: cardId, row_index: rowIndex, ...updates }).select().single();
+              if (inserted) {
+                useTimelineStore.getState().updateTodoItem(cardId, rowIndex, { id: inserted.id } as Partial<TodoItemData>);
+              }
+            }
+          }
+        } catch { /* */ }
       }
     }, [updateTodoItem, isLoggedIn],
   );
@@ -245,48 +288,48 @@ export function TimelineView() {
   const handleAddTodoRow = useCallback(
     async (cardId: string) => {
       addTodoItemRow(cardId);
-      if (isLoggedIn) {
-        try {
-          const supabase = createClient();
-          const { data: existing } = await supabase.from("todo_items").select("row_index").eq("card_id", cardId);
-          const maxRow = (existing || []).reduce((max: number, r: { row_index: number }) => Math.max(max, r.row_index), -1);
-          await supabase.from("todo_items").insert({ card_id: cardId, row_index: maxRow + 1, content: "", completed: false });
-        } catch { /* 表可能不存在 */ }
-      }
-    }, [addTodoItemRow, isLoggedIn],
+      // #11: 不在 DB 中插入空行
+    }, [addTodoItemRow],
   );
 
-  // 将待办拖到每日
   const handleMoveTodoToDaily = useCallback(
     async (cardId: string, todoRowIndex: number, targetDate: string) => {
-      // 找到原 todo 的内容（乐观更新前先保存）
-      const card = useTimelineStore.getState().cards.find((c) => c.id === cardId);
+      const state = useTimelineStore.getState();
+      const card = state.cards.find((c) => c.id === cardId);
       const todoItem = card?.todo_items.find((t) => t.row_index === todoRowIndex);
-      if (!todoItem) return;
+      if (!todoItem || !todoItem.content) return;
 
       moveTodoToDaily(cardId, todoRowIndex, targetDate);
 
       if (isLoggedIn) {
         try {
           const supabase = createClient();
-          // 在目标日期创建 daily_record
           const { data: existing } = await supabase.from("daily_records").select("row_index").eq("card_id", cardId).eq("date", targetDate);
           const maxRow = (existing || []).reduce((max: number, r: { row_index: number }) => Math.max(max, r.row_index), -1);
           await supabase.from("daily_records").insert({
             card_id: cardId, date: targetDate, row_index: maxRow + 1,
             content: todoItem.content, completed: todoItem.completed,
           });
-          // 删除原 todo_item
           if (todoItem.id && !todoItem.id.startsWith("temp-")) {
             await supabase.from("todo_items").delete().eq("id", todoItem.id);
           } else {
-            // 临时 ID 的项，尝试用 card_id + row_index 匹配删除
             await supabase.from("todo_items").delete().eq("card_id", cardId).eq("row_index", todoRowIndex);
           }
-        } catch { /* 表可能不存在 */ }
+        } catch { /* */ }
       }
     }, [moveTodoToDaily, isLoggedIn],
   );
+
+  // #7: 修复退出登录
+  const handleSignOut = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      await supabase.auth.signOut();
+    } catch { /* */ }
+    // 清除本地状态
+    setLoggedIn(false, null);
+    window.location.href = "/";
+  }, [setLoggedIn]);
 
   // 登录
   const handleLogin = useCallback(async () => {
@@ -301,13 +344,28 @@ export function TimelineView() {
     else { window.location.reload(); }
   }, [loginFormEmail, loginFormPassword, loginFormMode]);
 
+  // #10: 计算每张 Card 的 top（自动排布）
+  const sortedCards = useMemo(() => {
+    return [...cards].sort((a, b) => a.row_position - b.row_position);
+  }, [cards]);
+
+  const cardPositions = useMemo(() => {
+    const positions: Record<string, number> = {};
+    let currentTop = 4;
+    for (const card of sortedCards) {
+      positions[card.id] = currentTop;
+      currentTop += getCardHeight(card) + CARD_ROW_GAP;
+    }
+    return positions;
+  }, [sortedCards]);
+
   const today = getTodayCST();
   const todayOffset = Math.round((today.getTime() - viewportStart.getTime()) / 86400000);
   const contentHeight = useMemo(() => {
-    if (cards.length === 0) return 600;
-    const maxRow = cards.reduce((max) => Math.max(max, 88), 0);
-    return (Math.max(...cards.map((c) => c.row_position)) + 1) * (maxRow + 8) + 200;
-  }, [cards]);
+    if (sortedCards.length === 0) return 600;
+    const lastCard = sortedCards[sortedCards.length - 1];
+    return (cardPositions[lastCard.id] || 0) + getCardHeight(lastCard) + 200;
+  }, [sortedCards, cardPositions]);
 
   return (
     <div className="h-screen flex flex-col bg-[var(--bg)]">
@@ -315,9 +373,9 @@ export function TimelineView() {
       <div className="h-10 border-b border-[var(--border)] flex items-center justify-between px-4 shrink-0 bg-[var(--bg)] z-30">
         <div className="flex items-center gap-4">
           <span className="text-sm font-semibold tracking-tight">PlanMate</span>
-          {/* 列宽滑动条 */}
-          <div className="hidden md:flex items-center gap-2 text-xs text-[var(--text-muted)]">
-            <span>列宽</span>
+          {/* #9: 列宽滑动条 - 所有设备可见 */}
+          <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+            <span className="hidden sm:inline">列宽</span>
             <input
               type="range"
               min={40}
@@ -325,16 +383,16 @@ export function TimelineView() {
               step={10}
               value={cellWidth}
               onChange={(e) => setCellWidth(Number(e.target.value))}
-              className="w-20 h-1 accent-[var(--today-color)]"
+              className="w-16 sm:w-20 h-1 accent-[var(--today-color)]"
             />
-            <span className="w-6">{cellWidth}</span>
+            <span className="w-6 text-[var(--text-muted)]">{cellWidth}</span>
           </div>
         </div>
         <div className="flex items-center gap-3">
           {userEmail && <span className="text-xs text-[var(--text-muted)]">{userEmail}</span>}
           {isLoggedIn ? (
             <button
-              onClick={async () => { const { signOut } = await import("@/app/actions/auth"); signOut(); }}
+              onClick={handleSignOut}
               className="text-xs text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors"
             >
               退出
@@ -378,22 +436,21 @@ export function TimelineView() {
       {/* 时间轴内容区域 */}
       <div ref={scrollRef} onScroll={handleScroll} onDoubleClick={handleDoubleClick} className="flex-1 overflow-auto timeline-scroll relative">
         <div className="relative" style={{ width: TOTAL_DAYS * cellWidth, height: contentHeight, minWidth: "100%" }}>
-          {/* 网格背景线 */}
           <div className="absolute inset-0 pointer-events-none">
             {Array.from({ length: TOTAL_DAYS }, (_, i) => (
               <div key={i} className="absolute top-0 bottom-0 border-r border-[var(--border-light)]" style={{ left: i * cellWidth }} />
             ))}
           </div>
-          {/* 今日线 */}
           <TodayLine todayOffset={todayOffset * cellWidth} containerTop={0} containerHeight={contentHeight} />
-          {/* Cards */}
-          {cards.map((card) => (
+          {sortedCards.map((card) => (
             <div key={card.id} data-card>
               <TimelineCard
                 card={card}
+                top={cardPositions[card.id] || 0}
                 viewportStart={viewportStart}
                 onUpdate={handleUpdateCard}
                 onDelete={handleDeleteCard}
+                onReorder={handleReorderCard}
                 onUpdateDailyRecord={handleUpdateDailyRecord}
                 onAddDailyRow={handleAddDailyRow}
                 onUpdateTodoItem={handleUpdateTodoItem}

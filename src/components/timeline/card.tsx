@@ -3,7 +3,7 @@
 import { useCallback, useRef, useMemo, useState, type DragEvent } from "react";
 import { CardTitle } from "./card-title";
 import { EditableCell } from "./editable-cell";
-import { useTimelineStore, type CardData, ROW_HEIGHT, TITLE_HEIGHT, CARD_ROW_GAP } from "@/stores/timeline-store";
+import { useTimelineStore, type CardData, ROW_HEIGHT, TITLE_HEIGHT, CARD_ROW_GAP, TODO_HEADER_HEIGHT, getCardHeight, getDailyRowsForDate } from "@/stores/timeline-store";
 import {
   addDays,
   parseDate,
@@ -15,9 +15,11 @@ import {
 
 interface TimelineCardProps {
   card: CardData;
+  top: number;
   viewportStart: Date;
   onUpdate: (id: string, updates: Partial<CardData>) => void;
   onDelete: (id: string) => void;
+  onReorder: (cardId: string, newRowPosition: number) => void;
   onUpdateDailyRecord: (cardId: string, date: string, rowIndex: number, updates: { content?: string; completed?: boolean }) => void;
   onAddDailyRow: (cardId: string, date: string) => void;
   onUpdateTodoItem: (cardId: string, rowIndex: number, updates: { content?: string; completed?: boolean }) => void;
@@ -27,9 +29,11 @@ interface TimelineCardProps {
 
 export function TimelineCard({
   card,
+  top,
   viewportStart,
   onUpdate,
   onDelete,
+  onReorder,
   onUpdateDailyRecord,
   onAddDailyRow,
   onUpdateTodoItem,
@@ -37,51 +41,126 @@ export function TimelineCard({
   onMoveTodoToDaily,
 }: TimelineCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
-  const { dragState, startDrag, cellWidth } = useTimelineStore();
+  const { dragState, startDrag, cellWidth, cards } = useTimelineStore();
   const [showMobileMenu, setShowMobileMenu] = useState(false);
-  // 拖放时高亮的日期列
   const [dropHighlightDate, setDropHighlightDate] = useState<string | null>(null);
+  // reorder 高亮
+  const [reorderTarget, setReorderTarget] = useState<"top" | "bottom" | null>(null);
 
   const color = getCardColor(card.color_index);
   const today = getTodayCST();
-
-  const maxDailyRows = useMemo(() => {
-    const rowsByDate: Record<string, number> = {};
-    card.daily_records.forEach((r) => {
-      rowsByDate[r.date] = Math.max(rowsByDate[r.date] || 0, r.row_index + 1);
-    });
-    return Math.max(1, ...Object.values(rowsByDate));
-  }, [card.daily_records]);
-
-  const todoRowCount = useMemo(() => {
-    return Math.max(1, card.todo_items.reduce((max, t) => Math.max(max, t.row_index + 1), 0));
-  }, [card.todo_items]);
-
-  const FIXED_ROW_HEIGHT = 80;
 
   const startOffset = Math.round(
     (parseDate(card.start_date).getTime() - viewportStart.getTime()) / 86400000,
   );
   const left = startOffset * cellWidth;
   const width = card.duration_days * cellWidth;
-  const top = card.row_position * (FIXED_ROW_HEIGHT + CARD_ROW_GAP);
-
-  const dailySectionHeight = maxDailyRows * ROW_HEIGHT;
-  const todoSectionHeight = todoRowCount * ROW_HEIGHT;
-  const TODO_HEADER_HEIGHT = 20;
-  const totalInnerHeight = TITLE_HEIGHT + dailySectionHeight + 2 + TODO_HEADER_HEIGHT + todoSectionHeight + 4;
-
-  const cardHeight = Math.max(FIXED_ROW_HEIGHT, totalInnerHeight);
 
   const cardDates = useMemo(() => {
     const start = parseDate(card.start_date);
     return Array.from({ length: card.duration_days }, (_, i) => addDays(start, i));
   }, [card.start_date, card.duration_days]);
 
-  // 拖拽 Card 整体
+  // 每个 date 的可见行数（独立计算，含空输入行）
+  const dailyRowsByDate = useMemo(() => {
+    const map: Record<string, number> = {};
+    cardDates.forEach((d) => {
+      map[formatDate(d)] = getDailyRowsForDate(card, formatDate(d));
+    });
+    return map;
+  }, [card.daily_records, cardDates]);
+
+  // Card 每日区域的最大行数（决定最小高度）
+  const maxDailyRows = useMemo(() => {
+    return Math.max(1, ...Object.values(dailyRowsByDate));
+  }, [dailyRowsByDate]);
+
+  // 待办行数（含空输入行）
+  const todoRowCount = useMemo(() => {
+    const maxRow = card.todo_items.reduce((max, t) => Math.max(max, t.row_index + 1), 0);
+    return maxRow + 1; // 至少 1 行空输入
+  }, [card.todo_items]);
+
+  const height = getCardHeight(card);
+
+  // 拖拽 Card 标题（水平移动 + reorder）
   const handlePointerDown = useCallback(
-    (e: React.PointerEvent, type: "move" | "resize-left" | "resize-right") => {
+    (e: React.PointerEvent) => {
       if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "BUTTON") return;
+      e.preventDefault();
+      e.stopPropagation();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+      startDrag({
+        cardId: card.id,
+        type: "reorder",
+        startX: e.clientX,
+        startY: e.clientY,
+        originalStartDate: card.start_date,
+        originalDuration: card.duration_days,
+        originalRowPosition: card.row_position,
+      });
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let lastRowOffset = 0;
+
+      function onMove(ev: PointerEvent) {
+        const dx = ev.clientX - startX;
+        const store = useTimelineStore.getState();
+        // 水平：改变起始日期
+        const updates = store.updateDrag(dx, 0);
+        if (updates && store.dragState.cardId === card.id) {
+          store.updateCard(card.id, updates);
+        }
+
+        // 垂直：计算 reorder 目标
+        const dy = ev.clientY - startY;
+        const sortedCards = [...store.cards].sort((a, b) => a.row_position - b.row_position);
+        let cumulativeTop = 0;
+        let targetRow = card.row_position;
+        for (const c of sortedCards) {
+          const cHeight = getCardHeight(c);
+          if (c.id === card.id) {
+            cumulativeTop += cHeight + CARD_ROW_GAP;
+            continue;
+          }
+          // 如果拖动位置超过这个卡片的中点，就放到它后面
+          const cardMid = cumulativeTop + cHeight / 2;
+          const dragY = (card.row_position * (cHeight + CARD_ROW_GAP)) + dy;
+          // 简单计算：基于 dy 估算目标行
+          const newRow = Math.max(0, Math.min(sortedCards.length - 1, card.row_position + Math.round(dy / (cHeight + CARD_ROW_GAP))));
+          targetRow = newRow;
+          cumulativeTop += cHeight + CARD_ROW_GAP;
+        }
+        lastRowOffset = Math.round(dy / 100); // 粗略估算
+      }
+
+      function onUp() {
+        const store = useTimelineStore.getState();
+        if (lastRowOffset !== 0) {
+          const newPos = Math.max(0, Math.min(store.cards.length - 1, card.row_position + lastRowOffset));
+          if (newPos !== card.row_position) {
+            onReorder(card.id, newPos);
+          }
+        }
+        store.endDrag();
+        setReorderTarget(null);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      }
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [card.id, card.start_date, card.row_position, startDrag, onReorder],
+  );
+
+  // 边缘 resize
+  const handleEdgePointerDown = useCallback(
+    (e: React.PointerEvent, type: "resize-left" | "resize-right") => {
       e.preventDefault();
       e.stopPropagation();
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -97,15 +176,13 @@ export function TimelineCard({
       });
 
       const startX = e.clientX;
-      const startY = e.clientY;
 
       function onMove(ev: PointerEvent) {
         const dx = ev.clientX - startX;
-        const dy = ev.clientY - startY;
         const store = useTimelineStore.getState();
-        const updates = store.updateDrag(dx, dy);
+        const updates = store.updateDrag(dx, 0);
         if (updates && store.dragState.cardId === card.id) {
-          useTimelineStore.getState().updateCard(card.id, updates);
+          store.updateCard(card.id, updates);
         }
       }
 
@@ -120,14 +197,12 @@ export function TimelineCard({
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
     },
-    [card.id, card.start_date, card.duration_days, card.row_position, startDrag],
+    [card.id, card.start_date, card.duration_days, startDrag],
   );
 
   const isDragging = dragState.isDragging && dragState.cardId === card.id;
 
   // ===== 拖放：待办 → 每日 =====
-
-  // 拖动开始：设置拖动数据
   const handleTodoDragStart = (e: DragEvent, rowIndex: number) => {
     e.dataTransfer.setData("text/plain", JSON.stringify({
       type: "todo-to-daily",
@@ -135,7 +210,6 @@ export function TimelineCard({
       todoRowIndex: rowIndex,
     }));
     e.dataTransfer.effectAllowed = "move";
-    // 设置半透明拖动效果
     if (e.currentTarget instanceof HTMLElement) {
       e.currentTarget.style.opacity = "0.4";
     }
@@ -148,7 +222,6 @@ export function TimelineCard({
     setDropHighlightDate(null);
   };
 
-  // 拖过某天列时高亮
   const handleDailyCellDragOver = (e: DragEvent, dateStr: string) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -159,7 +232,6 @@ export function TimelineCard({
     setDropHighlightDate(null);
   };
 
-  // 放下到某天列
   const handleDailyCellDrop = (e: DragEvent, targetDate: string) => {
     e.preventDefault();
     setDropHighlightDate(null);
@@ -168,7 +240,7 @@ export function TimelineCard({
       if (data.type === "todo-to-daily" && data.cardId === card.id) {
         onMoveTodoToDaily(card.id, data.todoRowIndex, targetDate);
       }
-    } catch { /* 忽略非法拖放 */ }
+    } catch { /* 忽略 */ }
   };
 
   return (
@@ -177,9 +249,9 @@ export function TimelineCard({
       className="absolute rounded-lg border select-none"
       style={{
         left,
-        top: top + 4,
+        top,
         width,
-        minHeight: cardHeight,
+        minHeight: height,
         background: color.bg,
         borderColor: color.border,
         opacity: isDragging ? 0.8 : 1,
@@ -188,11 +260,11 @@ export function TimelineCard({
         touchAction: "none",
       }}
     >
-      {/* 标题行 */}
+      {/* 标题行 - 拖动可移动卡片 */}
       <div
         className="flex items-center justify-between px-2 cursor-grab active:cursor-grabbing"
         style={{ height: TITLE_HEIGHT }}
-        onPointerDown={(e) => handlePointerDown(e, "move")}
+        onPointerDown={handlePointerDown}
       >
         <CardTitle
           title={card.title}
@@ -200,6 +272,31 @@ export function TimelineCard({
           color={color}
         />
         <div className="flex items-center gap-1">
+          {/* 上下移动按钮（所有设备） */}
+          <div className="flex flex-col">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (card.row_position > 0) onReorder(card.id, card.row_position - 1);
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="text-[var(--text-subtle)] hover:text-[var(--text)] text-[10px] leading-none p-0.5"
+              disabled={card.row_position === 0}
+            >
+              ▲
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (card.row_position < cards.length - 1) onReorder(card.id, card.row_position + 1);
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="text-[var(--text-subtle)] hover:text-[var(--text)] text-[10px] leading-none p-0.5"
+              disabled={card.row_position >= cards.length - 1}
+            >
+              ▼
+            </button>
+          </div>
           <button
             onClick={(e) => { e.stopPropagation(); setShowMobileMenu(!showMobileMenu); }}
             onPointerDown={(e) => e.stopPropagation()}
@@ -235,12 +332,13 @@ export function TimelineCard({
         </div>
       )}
 
-      {/* ===== 上半部：每日记录（从左往右，每列一天） ===== */}
+      {/* ===== 上半部：每日记录 ===== */}
       <div className="flex" style={{ minHeight: maxDailyRows * ROW_HEIGHT }}>
         {cardDates.map((date) => {
           const dateStr = formatDate(date);
           const isToday = isSameDay(date, today);
           const isDropTarget = dropHighlightDate === dateStr;
+          const rowsForThisDate = dailyRowsByDate[dateStr] || 1;
 
           return (
             <div
@@ -253,32 +351,23 @@ export function TimelineCard({
               onDragLeave={handleDailyCellDragLeave}
               onDrop={(e) => handleDailyCellDrop(e, dateStr)}
             >
-              {/* 日期标签 */}
               <div
                 className={`text-center text-[9px] leading-4 border-b border-[var(--border-light)] ${
-                  isToday
-                    ? "text-[var(--today-color)] font-semibold bg-[var(--today-color)]/5"
-                    : "text-[var(--text-subtle)]"
+                  isToday ? "text-[var(--today-color)] font-semibold bg-[var(--today-color)]/5" : "text-[var(--text-subtle)]"
                 }`}
               >
                 {date.getDate()}
               </div>
-
-              {/* 记录行 */}
-              {Array.from({ length: maxDailyRows }, (_, rowIdx) => {
+              {Array.from({ length: rowsForThisDate }, (_, rowIdx) => {
                 const record = card.daily_records.find(
                   (r) => r.date === dateStr && r.row_index === rowIdx,
                 );
                 return (
-                  <div
-                    key={rowIdx}
-                    style={{ height: ROW_HEIGHT }}
-                    className="border-b border-[var(--border-light)] last:border-b-0"
-                  >
+                  <div key={rowIdx} style={{ height: ROW_HEIGHT }} className="border-b border-[var(--border-light)] last:border-b-0">
                     <EditableCell
                       content={record?.content || ""}
                       completed={record?.completed || false}
-                      isLastRow={rowIdx === maxDailyRows - 1}
+                      isLastRow={rowIdx === rowsForThisDate - 1}
                       onUpdate={(updates) => onUpdateDailyRecord(card.id, dateStr, rowIdx, updates)}
                       onExpandRow={() => onAddDailyRow(card.id, dateStr)}
                     />
@@ -290,25 +379,22 @@ export function TimelineCard({
         })}
       </div>
 
-      {/* ===== 分隔线 ===== */}
+      {/* 分隔线 */}
       <div className="border-t-2 border-dashed border-[var(--border)] mx-2 my-0.5" />
 
-      {/* ===== 下半部：待办清单（全宽一列） ===== */}
+      {/* ===== 下半部：待办清单 ===== */}
       <div className="px-1">
-        {/* 标题 */}
         <div className="text-[10px] font-medium text-[var(--text-muted)] px-1 leading-5 select-none">
           待办清单
         </div>
         {Array.from({ length: todoRowCount }, (_, rowIdx) => {
           const item = card.todo_items.find((t) => t.row_index === rowIdx);
-          const hasContent = item && item.content;
+          const hasContent = !!(item && item.content);
           return (
             <div
               key={rowIdx}
               style={{ height: ROW_HEIGHT }}
-              className={`border-b border-[var(--border-light)] last:border-b-0 ${
-                hasContent ? "cursor-grab" : ""
-              }`}
+              className={`border-b border-[var(--border-light)] last:border-b-0 ${hasContent ? "cursor-grab" : ""}`}
               draggable={hasContent ? true : false}
               onDragStart={(e) => handleTodoDragStart(e, rowIdx)}
               onDragEnd={handleTodoDragEnd}
@@ -325,16 +411,9 @@ export function TimelineCard({
         })}
       </div>
 
-      {/* 左边缘拖拽热区（桌面端） */}
-      <div
-        className="hidden md:block absolute top-0 left-0 w-1.5 h-full cursor-ew-resize z-10"
-        onPointerDown={(e) => handlePointerDown(e, "resize-left")}
-      />
-      {/* 右边缘拖拽热区（桌面端） */}
-      <div
-        className="hidden md:block absolute top-0 right-0 w-1.5 h-full cursor-ew-resize z-10"
-        onPointerDown={(e) => handlePointerDown(e, "resize-right")}
-      />
+      {/* 左右边缘 resize */}
+      <div className="hidden md:block absolute top-0 left-0 w-1.5 h-full cursor-ew-resize z-10" onPointerDown={(e) => handleEdgePointerDown(e, "resize-left")} />
+      <div className="hidden md:block absolute top-0 right-0 w-1.5 h-full cursor-ew-resize z-10" onPointerDown={(e) => handleEdgePointerDown(e, "resize-right")} />
     </div>
   );
 }
