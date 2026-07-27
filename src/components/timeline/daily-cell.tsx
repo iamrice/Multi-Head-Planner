@@ -5,10 +5,12 @@ import { useState, useRef, useEffect, useCallback } from "react";
 interface DailyCellProps {
   content: string;
   completed: boolean;
+  isLastRow: boolean;
   onUpdate: (updates: { content?: string; completed?: boolean }) => void;
+  onExpandRow?: () => void;
 }
 
-export function DailyCell({ content, completed, onUpdate }: DailyCellProps) {
+export function DailyCell({ content, completed, isLastRow, onUpdate, onExpandRow }: DailyCellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(content);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -35,6 +37,10 @@ export function DailyCell({ content, completed, onUpdate }: DailyCellProps) {
     const trimmed = draft.trim();
     if (trimmed !== content) {
       onUpdate({ content: trimmed });
+      // 如果是最后一行且输入了内容，自动扩展新行
+      if (isLastRow && trimmed && onExpandRow) {
+        onExpandRow();
+      }
     }
     setEditing(false);
   }

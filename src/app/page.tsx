@@ -1,21 +1,6 @@
-import { createClient } from "@/lib/supabase/server";
-import { redirect } from "next/navigation";
 import { TimelineView } from "@/components/timeline/timeline-view";
 
 export default async function Home() {
-  // 检查登录状态
-  try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      redirect("/login");
-    }
-  } catch {
-    redirect("/login");
-  }
-
+  // 不再强制登录检查，允许未登录用户使用（本地缓存模式）
   return <TimelineView />;
 }

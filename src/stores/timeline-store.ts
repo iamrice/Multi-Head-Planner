@@ -31,11 +31,21 @@ interface DragState {
   originalRowPosition: number;
 }
 
+// 登录提示状态
+interface AuthPromptState {
+  show: boolean;
+  dismissed: boolean;
+}
+
 interface TimelineState {
   cards: CardData[];
   dragState: DragState;
   scrollOffset: number;
   viewportStart: Date;
+  isLoggedIn: boolean | null; // null=未检测
+  userEmail: string | null;
+  authPrompt: AuthPromptState;
+  hasCreatedCard: boolean; // 本地是否创建过 Card
 
   setCards: (cards: CardData[]) => void;
   addCard: (card: CardData) => void;
@@ -47,14 +57,21 @@ interface TimelineState {
     rowIndex: number,
     updates: Partial<DailyRecordData>,
   ) => void;
+  addDailyRecordRow: (cardId: string, date: string) => void;
   startDrag: (drag: Omit<DragState, "isDragging">) => void;
   updateDrag: (dx: number, dy: number) => Partial<CardData> | null;
   endDrag: () => void;
   setScrollOffset: (offset: number) => void;
   setViewportStart: (date: Date) => void;
+  setLoggedIn: (v: boolean, email?: string | null) => void;
+  setAuthPrompt: (s: Partial<AuthPromptState>) => void;
+  setHasCreatedCard: (v: boolean) => void;
 }
 
 const CELL_WIDTH = 80;
+const ROW_HEIGHT = 24;
+const TITLE_HEIGHT = 28;
+const CARD_ROW_GAP = 8;
 
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   cards: [],
@@ -69,11 +86,14 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     originalRowPosition: 0,
   },
   scrollOffset: 0,
-  // 使用东八区日期，viewport 起始 = 今天往前 14 天
   viewportStart: (() => {
     const today = getTodayCST();
     return addDays(today, -14);
   })(),
+  isLoggedIn: null,
+  userEmail: null,
+  authPrompt: { show: false, dismissed: false },
+  hasCreatedCard: false,
 
   setCards: (cards) => set({ cards }),
 
@@ -105,9 +125,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
             ),
           };
         } else {
-          // 记录不存在，乐观插入
           const newRecord: DailyRecordData = {
-            id: `temp-${Date.now()}`,
+            id: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             card_id: cardId,
             date,
             row_index: rowIndex,
@@ -122,6 +141,26 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       }),
     })),
 
+  // 为某天添加新行
+  addDailyRecordRow: (cardId, date) =>
+    set((state) => ({
+      cards: state.cards.map((card) => {
+        if (card.id !== cardId) return card;
+        const existingMaxRow = card.daily_records
+          .filter((r) => r.date === date)
+          .reduce((max, r) => Math.max(max, r.row_index), -1);
+        const newRecord: DailyRecordData = {
+          id: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          card_id: cardId,
+          date,
+          row_index: existingMaxRow + 1,
+          content: "",
+          completed: false,
+        };
+        return { ...card, daily_records: [...card.daily_records, newRecord] };
+      }),
+    })),
+
   startDrag: (drag) => set({ dragState: { ...drag, isDragging: true } }),
 
   updateDrag: (dx, dy) => {
@@ -130,7 +169,18 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     if (!dragState.isDragging || !dragState.cardId) return null;
 
     const dayOffset = Math.round(dx / CELL_WIDTH);
-    const rowOffset = Math.round(dy / 80);
+    // 估算行偏移：每行高度 = TITLE_HEIGHT + maxRecordRows * ROW_HEIGHT + CARD_ROW_GAP + 4
+    const card = state.cards.find((c) => c.id === dragState.cardId);
+    const maxRows = card
+      ? Math.max(1, ...Object.values(
+          card.daily_records.reduce((acc: Record<string, number>, r) => {
+            acc[r.date] = Math.max(acc[r.date] || 0, r.row_index + 1);
+            return acc;
+          }, {})
+        ))
+      : 1;
+    const rowHeight = TITLE_HEIGHT + maxRows * ROW_HEIGHT + CARD_ROW_GAP + 4;
+    const rowOffset = Math.round(dy / rowHeight);
 
     if (dragState.type === "move" && dragState.originalStartDate) {
       const newStart = addDays(parseDate(dragState.originalStartDate), dayOffset);
@@ -176,4 +226,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
 
   setScrollOffset: (offset) => set({ scrollOffset: offset }),
   setViewportStart: (date) => set({ viewportStart: date }),
+  setLoggedIn: (v, email) => set({ isLoggedIn: v, userEmail: email ?? null }),
+  setAuthPrompt: (s) => set((state) => ({ authPrompt: { ...state.authPrompt, ...s } })),
+  setHasCreatedCard: (v) => set({ hasCreatedCard: v }),
 }));
