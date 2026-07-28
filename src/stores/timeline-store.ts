@@ -62,8 +62,10 @@ interface TimelineState {
   deleteCard: (id: string) => void;
   reorderCard: (cardId: string, newRowPosition: number) => void;
   updateDailyRecord: (cardId: string, date: string, rowIndex: number, updates: Partial<DailyRecordData>) => void;
+  deleteDailyRecord: (cardId: string, date: string, rowIndex: number) => void;
   addDailyRecordRow: (cardId: string, date: string) => void;
   updateTodoItem: (cardId: string, rowIndex: number, updates: Partial<TodoItemData>) => void;
+  deleteTodoItem: (cardId: string, rowIndex: number) => void;
   addTodoItemRow: (cardId: string) => void;
   moveTodoToDaily: (cardId: string, todoRowIndex: number, targetDate: string) => void;
   startDrag: (drag: Omit<DragState, "isDragging">) => void;
@@ -198,6 +200,21 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       }),
     })),
 
+  deleteDailyRecord: (cardId, date, rowIndex) =>
+    set((state) => ({
+      cards: state.cards.map((card) => {
+        if (card.id !== cardId) return card;
+        // 删除该条记录，后续行 row_index 上移
+        const remaining = card.daily_records
+          .filter((r) => !(r.date === date && r.row_index === rowIndex))
+          .map((r) => ({
+            ...r,
+            row_index: r.date === date && r.row_index > rowIndex ? r.row_index - 1 : r.row_index,
+          }));
+        return { ...card, daily_records: remaining };
+      }),
+    })),
+
   updateTodoItem: (cardId, rowIndex, updates) =>
     set((state) => ({
       cards: state.cards.map((card) => {
@@ -231,6 +248,21 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
         if (card.id !== cardId) return card;
         // 不在 store 中创建空行 — 空行由渲染逻辑自动展示
         return card;
+      }),
+    })),
+
+  deleteTodoItem: (cardId, rowIndex) =>
+    set((state) => ({
+      cards: state.cards.map((card) => {
+        if (card.id !== cardId) return card;
+        // 删除该项，后续项 row_index 上移
+        const remaining = card.todo_items
+          .filter((t) => t.row_index !== rowIndex)
+          .map((t) => ({
+            ...t,
+            row_index: t.row_index > rowIndex ? t.row_index - 1 : t.row_index,
+          }));
+        return { ...card, todo_items: remaining };
       }),
     })),
 

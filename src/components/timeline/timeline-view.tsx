@@ -51,8 +51,10 @@ export function TimelineView() {
     reorderCard,
     updateDailyRecord,
     addDailyRecordRow,
+    deleteDailyRecord,
     updateTodoItem,
     addTodoItemRow,
+    deleteTodoItem,
     moveTodoToDaily,
     setLoggedIn,
     setAuthPrompt,
@@ -255,6 +257,30 @@ export function TimelineView() {
     }, [addDailyRecordRow],
   );
 
+  // 删除每日记录
+  const handleDeleteDailyRecord = useCallback(
+    async (cardId: string, date: string, rowIndex: number) => {
+      // 先从 store 找到要删除的记录 ID
+      const state = useTimelineStore.getState();
+      const card = state.cards.find((c) => c.id === cardId);
+      const record = card?.daily_records.find((r) => r.date === date && r.row_index === rowIndex);
+
+      deleteDailyRecord(cardId, date, rowIndex);
+
+      if (isLoggedIn && record) {
+        try {
+          const supabase = createClient();
+          if (record.id && !record.id.startsWith("temp-")) {
+            await supabase.from("daily_records").delete().eq("id", record.id);
+          } else {
+            // 临时 ID → 按 card_id+date+row_index 删除
+            await supabase.from("daily_records").delete().eq("card_id", cardId).eq("date", date).eq("row_index", rowIndex);
+          }
+        } catch { /* */ }
+      }
+    }, [deleteDailyRecord, isLoggedIn],
+  );
+
   // #13: 同样修复 todo_items
   const handleUpdateTodoItem = useCallback(
     async (cardId: string, rowIndex: number, updates: { content?: string; completed?: boolean }) => {
@@ -290,6 +316,28 @@ export function TimelineView() {
       addTodoItemRow(cardId);
       // #11: 不在 DB 中插入空行
     }, [addTodoItemRow],
+  );
+
+  // 删除待办事项
+  const handleDeleteTodoItem = useCallback(
+    async (cardId: string, rowIndex: number) => {
+      const state = useTimelineStore.getState();
+      const card = state.cards.find((c) => c.id === cardId);
+      const item = card?.todo_items.find((t) => t.row_index === rowIndex);
+
+      deleteTodoItem(cardId, rowIndex);
+
+      if (isLoggedIn && item) {
+        try {
+          const supabase = createClient();
+          if (item.id && !item.id.startsWith("temp-")) {
+            await supabase.from("todo_items").delete().eq("id", item.id);
+          } else {
+            await supabase.from("todo_items").delete().eq("card_id", cardId).eq("row_index", rowIndex);
+          }
+        } catch { /* */ }
+      }
+    }, [deleteTodoItem, isLoggedIn],
   );
 
   const handleMoveTodoToDaily = useCallback(
@@ -453,8 +501,10 @@ export function TimelineView() {
                 onReorder={handleReorderCard}
                 onUpdateDailyRecord={handleUpdateDailyRecord}
                 onAddDailyRow={handleAddDailyRow}
+                onDeleteDailyRecord={handleDeleteDailyRecord}
                 onUpdateTodoItem={handleUpdateTodoItem}
                 onAddTodoRow={handleAddTodoRow}
+                onDeleteTodoItem={handleDeleteTodoItem}
                 onMoveTodoToDaily={handleMoveTodoToDaily}
               />
             </div>

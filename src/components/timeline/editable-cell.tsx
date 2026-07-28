@@ -8,6 +8,7 @@ interface EditableCellProps {
   isLastRow: boolean;
   onUpdate: (updates: { content?: string; completed?: boolean }) => void;
   onExpandRow?: () => void;
+  onDelete?: () => void;
 }
 
 /**
@@ -18,11 +19,13 @@ interface EditableCellProps {
  * - hover 时显示完整文字 tooltip
  * - 空内容禁止打勾
  * - 空内容不上传数据库
+ * - hover 时显示删除按钮
  */
-export function EditableCell({ content, completed, isLastRow, onUpdate, onExpandRow }: EditableCellProps) {
+export function EditableCell({ content, completed, isLastRow, onUpdate, onExpandRow, onDelete }: EditableCellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(content);
   const [composing, setComposing] = useState(false);
+  const [hovering, setHovering] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -74,8 +77,19 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
   // #12: 空内容禁止打勾
   const canToggle = !!content;
 
+  function handleDelete() {
+    if (!onDelete) return;
+    if (confirm(`删除"${content}"？`)) {
+      onDelete();
+    }
+  }
+
   return (
-    <div className="w-full h-full flex items-center gap-1 px-0.5">
+    <div
+      className="w-full h-full flex items-center gap-1 px-0.5 group"
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+    >
       {/* Checkbox - 空内容时禁用 */}
       <button
         onClick={(e) => {
@@ -128,6 +142,25 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
         >
           {content || <span className="text-[var(--text-subtle)] opacity-40">+</span>}
         </span>
+      )}
+
+      {/* 删除按钮 - hover 时显示，有内容且非编辑态时可见 */}
+      {content && !editing && onDelete && hovering && (
+        <button
+          onClick={(e) => { e.stopPropagation(); handleDelete(); }}
+          className="shrink-0 w-4 h-4 flex items-center justify-center text-[var(--text-subtle)] hover:text-red-500 transition-colors rounded"
+          title="删除"
+        >
+          <svg viewBox="0 0 12 12" className="w-2.5 h-2.5">
+            <path
+              d="M2 2l8 8M10 2l-8 8"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
       )}
     </div>
   );

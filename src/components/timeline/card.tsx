@@ -22,8 +22,10 @@ interface TimelineCardProps {
   onReorder: (cardId: string, newRowPosition: number) => void;
   onUpdateDailyRecord: (cardId: string, date: string, rowIndex: number, updates: { content?: string; completed?: boolean }) => void;
   onAddDailyRow: (cardId: string, date: string) => void;
+  onDeleteDailyRecord: (cardId: string, date: string, rowIndex: number) => void;
   onUpdateTodoItem: (cardId: string, rowIndex: number, updates: { content?: string; completed?: boolean }) => void;
   onAddTodoRow: (cardId: string) => void;
+  onDeleteTodoItem: (cardId: string, rowIndex: number) => void;
   onMoveTodoToDaily: (cardId: string, todoRowIndex: number, targetDate: string) => void;
 }
 
@@ -36,8 +38,10 @@ export function TimelineCard({
   onReorder,
   onUpdateDailyRecord,
   onAddDailyRow,
+  onDeleteDailyRecord,
   onUpdateTodoItem,
   onAddTodoRow,
+  onDeleteTodoItem,
   onMoveTodoToDaily,
 }: TimelineCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
@@ -370,6 +374,7 @@ export function TimelineCard({
                       isLastRow={rowIdx === rowsForThisDate - 1}
                       onUpdate={(updates) => onUpdateDailyRecord(card.id, dateStr, rowIdx, updates)}
                       onExpandRow={() => onAddDailyRow(card.id, dateStr)}
+                      onDelete={record?.content ? () => onDeleteDailyRecord(card.id, dateStr, rowIdx) : undefined}
                     />
                   </div>
                 );
@@ -405,6 +410,7 @@ export function TimelineCard({
                 isLastRow={rowIdx === todoRowCount - 1}
                 onUpdate={(updates) => onUpdateTodoItem(card.id, rowIdx, updates)}
                 onExpandRow={() => onAddTodoRow(card.id)}
+                onDelete={hasContent ? () => onDeleteTodoItem(card.id, rowIdx) : undefined}
               />
             </div>
           );
