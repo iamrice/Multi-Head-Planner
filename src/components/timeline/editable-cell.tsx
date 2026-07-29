@@ -12,27 +12,31 @@ interface EditableCellProps {
 }
 
 /**
- * 可编辑单元格 - 用于每日记录和待办清单
+ * 可编辑单元格
  * - 单击即可编辑
  * - 编辑时 checkbox 始终可见
- * - 支持 IME 拼音输入（composing 状态下回车不触发提交）
+ * - 支持 IME 拼音输入
  * - hover 时显示完整文字 tooltip
  * - 空内容禁止打勾
  * - 空内容不上传数据库
  * - hover 时显示删除按钮
+ * - 文字超出列宽时自动换行
  */
 export function EditableCell({ content, completed, isLastRow, onUpdate, onExpandRow, onDelete }: EditableCellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(content);
   const [composing, setComposing] = useState(false);
   const [hovering, setHovering] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (editing && inputRef.current) {
       inputRef.current.focus();
+      // 自动调整高度
+      inputRef.current.style.height = "auto";
+      inputRef.current.style.height = inputRef.current.scrollHeight + "px";
     }
-  }, [editing]);
+  }, [editing, draft]);
 
   useEffect(() => {
     if (!editing) {
@@ -48,7 +52,7 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
   function commitEdit() {
     const trimmed = draft.trim();
 
-    // #11: 空内容不上传，也不触发 expand
+    // 空内容不上传
     if (!trimmed) {
       setEditing(false);
       return;
@@ -74,7 +78,6 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
     }
   }
 
-  // #12: 空内容禁止打勾
   const canToggle = !!content;
 
   function handleDelete() {
@@ -86,11 +89,11 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
 
   return (
     <div
-      className="w-full h-full flex items-center gap-1 px-0.5 group"
+      className="w-full h-full flex items-start gap-1 px-0.5 py-0.5 group"
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
     >
-      {/* Checkbox - 空内容时禁用 */}
+      {/* Checkbox */}
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -98,7 +101,7 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
             onUpdate({ completed: !completed });
           }
         }}
-        className={`shrink-0 w-3.5 h-3.5 rounded-sm border flex items-center justify-center transition-colors ${
+        className={`shrink-0 w-3.5 h-3.5 mt-0.5 rounded-sm border flex items-center justify-center transition-colors ${
           completed
             ? "bg-[var(--today-color)] border-[var(--today-color)]"
             : canToggle
@@ -108,21 +111,14 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
       >
         {completed && (
           <svg viewBox="0 0 12 12" className="w-2.5 h-2.5 text-white">
-            <path
-              d="M2.5 6l2.5 2.5 4.5-5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <path d="M2.5 6l2.5 2.5 4.5-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         )}
       </button>
 
       {/* 文本 */}
       {editing ? (
-        <input
+        <textarea
           ref={inputRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -130,13 +126,14 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
           onKeyDown={handleKeyDown}
           onCompositionStart={() => setComposing(true)}
           onCompositionEnd={() => setComposing(false)}
-          className="flex-1 min-w-0 text-xs bg-white border border-[var(--today-color)] outline-none rounded px-1 h-5"
+          rows={1}
+          className="flex-1 min-w-0 text-xs bg-white border border-[var(--today-color)] outline-none rounded px-1 py-0 resize-none overflow-hidden leading-[18px]"
         />
       ) : (
         <span
           onClick={startEditing}
           title={content || undefined}
-          className={`flex-1 min-w-0 text-xs truncate cursor-text rounded px-1 h-5 leading-5 ${
+          className={`flex-1 min-w-0 text-xs cursor-text rounded px-1 leading-[18px] break-words whitespace-pre-wrap ${
             completed ? "line-through text-[var(--text-subtle)]" : ""
           } hover:bg-black/[0.03] transition-colors`}
         >
@@ -144,21 +141,15 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
         </span>
       )}
 
-      {/* 删除按钮 - hover 时显示，有内容且非编辑态时可见 */}
+      {/* 删除按钮 */}
       {content && !editing && onDelete && hovering && (
         <button
           onClick={(e) => { e.stopPropagation(); handleDelete(); }}
-          className="shrink-0 w-4 h-4 flex items-center justify-center text-[var(--text-subtle)] hover:text-red-500 transition-colors rounded"
+          className="shrink-0 w-4 h-4 mt-0.5 flex items-center justify-center text-[var(--text-subtle)] hover:text-red-500 transition-colors rounded"
           title="删除"
         >
           <svg viewBox="0 0 12 12" className="w-2.5 h-2.5">
-            <path
-              d="M2 2l8 8M10 2l-8 8"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
+            <path d="M2 2l8 8M10 2l-8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </button>
       )}

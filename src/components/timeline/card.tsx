@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useRef, useMemo, useState, type DragEvent } from "react";
+import { useCallback, useRef, useMemo, useState, useEffect, type DragEvent } from "react";
 import { CardTitle } from "./card-title";
 import { EditableCell } from "./editable-cell";
-import { useTimelineStore, type CardData, ROW_HEIGHT, TITLE_HEIGHT, CARD_ROW_GAP, TODO_HEADER_HEIGHT, getCardHeight, getDailyRowsForDate } from "@/stores/timeline-store";
+import { useTimelineStore, type CardData, ROW_HEIGHT, TITLE_HEIGHT, CARD_ROW_GAP, getDailyRowsForDate } from "@/stores/timeline-store";
 import {
   addDays,
   parseDate,
@@ -45,7 +45,7 @@ export function TimelineCard({
   onMoveTodoToDaily,
 }: TimelineCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
-  const { dragState, startDrag, cellWidth, cards } = useTimelineStore();
+  const { dragState, startDrag, cellWidth, cards, setMeasuredHeight } = useTimelineStore();
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [dropHighlightDate, setDropHighlightDate] = useState<string | null>(null);
   // reorder 高亮
@@ -85,7 +85,19 @@ export function TimelineCard({
     return maxRow + 1; // 至少 1 行空输入
   }, [card.todo_items]);
 
-  const height = getCardHeight(card);
+  // ===== ResizeObserver：测量卡片实际高度并上报 =====
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      if (entries[0]) {
+        const h = entries[0].contentRect.height;
+        setMeasuredHeight(card.id, h);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [card.id, setMeasuredHeight]);
 
   // 拖拽 Card 标题（水平移动 + reorder）
   const handlePointerDown = useCallback(
@@ -121,10 +133,11 @@ export function TimelineCard({
         // 垂直：计算 reorder 目标
         const dy = ev.clientY - startY;
         const sortedCards = [...store.cards].sort((a, b) => a.row_position - b.row_position);
+        const mHeights = store.measuredHeights;
         let cumulativeTop = 0;
         let targetRow = card.row_position;
         for (const c of sortedCards) {
-          const cHeight = getCardHeight(c);
+          const cHeight = mHeights[c.id] || 100; // 回退默认值
           if (c.id === card.id) {
             cumulativeTop += cHeight + CARD_ROW_GAP;
             continue;
@@ -255,7 +268,6 @@ export function TimelineCard({
         left,
         top,
         width,
-        minHeight: height,
         background: color.bg,
         borderColor: color.border,
         opacity: isDragging ? 0.8 : 1,
@@ -367,7 +379,7 @@ export function TimelineCard({
                   (r) => r.date === dateStr && r.row_index === rowIdx,
                 );
                 return (
-                  <div key={rowIdx} style={{ height: ROW_HEIGHT }} className="border-b border-[var(--border-light)] last:border-b-0">
+                  <div key={rowIdx} style={{ minHeight: ROW_HEIGHT }} className="border-b border-[var(--border-light)] last:border-b-0">
                     <EditableCell
                       content={record?.content || ""}
                       completed={record?.completed || false}
@@ -398,7 +410,7 @@ export function TimelineCard({
           return (
             <div
               key={rowIdx}
-              style={{ height: ROW_HEIGHT }}
+              style={{ minHeight: ROW_HEIGHT }}
               className={`border-b border-[var(--border-light)] last:border-b-0 ${hasContent ? "cursor-grab" : ""}`}
               draggable={hasContent ? true : false}
               onDragStart={(e) => handleTodoDragStart(e, rowIdx)}

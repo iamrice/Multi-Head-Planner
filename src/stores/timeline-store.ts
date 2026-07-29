@@ -47,6 +47,7 @@ interface AuthPromptState {
 
 interface TimelineState {
   cards: CardData[];
+  measuredHeights: Record<string, number>; // cardId → 实测像素高度
   dragState: DragState;
   scrollOffset: number;
   viewportStart: Date;
@@ -77,6 +78,7 @@ interface TimelineState {
   setAuthPrompt: (s: Partial<AuthPromptState>) => void;
   setHasCreatedCard: (v: boolean) => void;
   setCellWidth: (w: number) => void;
+  setMeasuredHeight: (cardId: string, height: number) => void;
 }
 
 const ROW_HEIGHT = 24;
@@ -91,32 +93,28 @@ export function getDailyRowsForDate(card: CardData, date: string): number {
   const maxRow = card.daily_records
     .filter((r) => r.date === date)
     .reduce((max, r) => Math.max(max, r.row_index + 1), 0);
-  // 有内容则 maxRow >= 1，再加 1 行空输入；无内容则 maxRow=0，加 1 行空输入 → 最少 1 行
   return maxRow + 1;
 }
 
-/** 计算一张 Card 的实际像素高度（与渲染完全一致） */
-export function getCardHeight(card: CardData): number {
-  // 每个日期列的行数 = getDailyRowsForDate，取最大值
-  const rowsByDate: Record<string, number> = {};
-  card.daily_records.forEach((r) => {
-    rowsByDate[r.date] = Math.max(rowsByDate[r.date] || 0, r.row_index + 1);
-  });
-  // 所有日期的可见行数（含空输入行）
-  const allDateRowCounts = Object.keys(rowsByDate).length > 0
-    ? Object.entries(rowsByDate).map(([, maxRow]) => maxRow + 1)
-    : [1]; // 无记录时至少 1 行
-  const maxDailyRows = Math.max(...allDateRowCounts);
-
-  // 待办行数（含空输入行）
-  const maxTodoRow = card.todo_items.reduce((max, t) => Math.max(max, t.row_index + 1), 0);
-  const todoRows = maxTodoRow + 1; // 至少 1 行空输入
-
-  return TITLE_HEIGHT + maxDailyRows * ROW_HEIGHT + 2 + TODO_HEADER_HEIGHT + todoRows * ROW_HEIGHT + 4;
+/**
+ * 粗略估算 Card 高度，仅用于初始布局和滚动区域估算。
+ * 实际定位使用 ResizeObserver 测量的真实高度。
+ */
+export function getCardHeight(card: CardData, _cellWidth = 80): number {
+  const maxDailyRows = Math.max(1, ...Object.values(
+    card.daily_records.reduce((acc: Record<string, number>, r) => {
+      acc[r.date] = Math.max(acc[r.date] || 0, r.row_index + 1);
+      return acc;
+    }, {})
+  ));
+  const todoRows = Math.max(1, card.todo_items.reduce((max, t) => Math.max(max, t.row_index + 1), 0));
+  // 额外 +1 行给每个日期的空输入行
+  return TITLE_HEIGHT + (maxDailyRows + 1) * ROW_HEIGHT + 2 + TODO_HEADER_HEIGHT + (todoRows + 1) * ROW_HEIGHT + 4;
 }
 
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   cards: [],
+  measuredHeights: {},
   dragState: {
     isDragging: false,
     cardId: null,
@@ -358,4 +356,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   setAuthPrompt: (s) => set((state) => ({ authPrompt: { ...state.authPrompt, ...s } })),
   setHasCreatedCard: (v) => set({ hasCreatedCard: v }),
   setCellWidth: (w) => set({ cellWidth: w }),
+  setMeasuredHeight: (cardId, height) =>
+    set((state) => ({
+      measuredHeights: { ...state.measuredHeights, [cardId]: height },
+    })),
 }));

@@ -44,6 +44,7 @@ export function TimelineView() {
     userEmail,
     authPrompt,
     cellWidth,
+    measuredHeights,
     setCards,
     addCard,
     updateCard,
@@ -61,6 +62,62 @@ export function TimelineView() {
     setHasCreatedCard,
     setCellWidth,
   } = useTimelineStore();
+
+  // ===== 数据加载函数 =====
+  const loadDataFromDB = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { data: cardsData } = await supabase.from("cards").select("*").order("row_position");
+      if (cardsData && cardsData.length > 0) {
+        const cardIds = cardsData.map((c: { id: string }) => c.id);
+
+        let recordsData: unknown[] | null = null;
+        try {
+          const r = await supabase.from("daily_records").select("*").in("card_id", cardIds);
+          recordsData = r.data;
+        } catch { /* */ }
+
+        let todosData: unknown[] | null = null;
+        try {
+          const t = await supabase.from("todo_items").select("*").in("card_id", cardIds);
+          todosData = t.data;
+        } catch { /* */ }
+
+        const recordsByCard: Record<string, unknown[]> = {};
+        (recordsData || []).forEach((r) => {
+          const rec = r as Record<string, unknown>;
+          const cid = rec.card_id as string;
+          if (!recordsByCard[cid]) recordsByCard[cid] = [];
+          recordsByCard[cid]!.push(r);
+        });
+        const todosByCard: Record<string, unknown[]> = {};
+        (todosData || []).forEach((t) => {
+          const rec = t as Record<string, unknown>;
+          const cid = rec.card_id as string;
+          if (!todosByCard[cid]) todosByCard[cid] = [];
+          todosByCard[cid]!.push(t);
+        });
+
+        setCards(
+          cardsData.map((c: Record<string, unknown>) => ({
+            id: c.id as string,
+            title: c.title as string,
+            start_date: c.start_date as string,
+            duration_days: c.duration_days as number,
+            row_position: c.row_position as number,
+            color_index: c.color_index as number,
+            daily_records: ((recordsByCard[c.id as string] || []) as DailyRecordData[]).filter((r) => r.content !== ""),
+            todo_items: ((todosByCard[c.id as string] || []) as TodoItemData[]).filter((t) => t.content !== ""),
+          })),
+        );
+      } else {
+        setCards([]);
+      }
+    } catch (err) {
+      console.error("[PlanMate] loadDataFromDB error:", err);
+      setCards([]);
+    }
+  }, [setCards]);
 
   // 持久化本地卡片
   useEffect(() => {
@@ -82,62 +139,43 @@ export function TimelineView() {
       setLoggedIn(loggedIn, email);
 
       if (loggedIn) {
-        try {
-          const supabase = createClient();
-          const { data: cardsData } = await supabase.from("cards").select("*").order("row_position");
-          if (cardsData && cardsData.length > 0) {
-            const cardIds = cardsData.map((c: { id: string }) => c.id);
-
-            let recordsData: unknown[] | null = null;
-            try {
-              const r = await supabase.from("daily_records").select("*").in("card_id", cardIds);
-              recordsData = r.data;
-            } catch { /* */ }
-
-            let todosData: unknown[] | null = null;
-            try {
-              const t = await supabase.from("todo_items").select("*").in("card_id", cardIds);
-              todosData = t.data;
-            } catch { /* */ }
-
-            const recordsByCard: Record<string, unknown[]> = {};
-            (recordsData || []).forEach((r) => {
-              const rec = r as Record<string, unknown>;
-              const cid = rec.card_id as string;
-              if (!recordsByCard[cid]) recordsByCard[cid] = [];
-              recordsByCard[cid]!.push(r);
-            });
-            const todosByCard: Record<string, unknown[]> = {};
-            (todosData || []).forEach((t) => {
-              const rec = t as Record<string, unknown>;
-              const cid = rec.card_id as string;
-              if (!todosByCard[cid]) todosByCard[cid] = [];
-              todosByCard[cid]!.push(t);
-            });
-
-            setCards(
-              cardsData.map((c: Record<string, unknown>) => ({
-                id: c.id as string,
-                title: c.title as string,
-                start_date: c.start_date as string,
-                duration_days: c.duration_days as number,
-                row_position: c.row_position as number,
-                color_index: c.color_index as number,
-                daily_records: ((recordsByCard[c.id as string] || []) as DailyRecordData[]).filter((r) => r.content !== ""),
-                todo_items: ((todosByCard[c.id as string] || []) as TodoItemData[]).filter((t) => t.content !== ""),
-              })),
-            );
-          } else {
-            setCards([]);
-          }
-        } catch { setCards([]); }
+        await loadDataFromDB();
       } else {
         setCards(loadLocalCards());
       }
       setLoaded(true);
     }
     load();
-  }, [setCards, setLoggedIn]);
+  }, [setCards, setLoggedIn, loadDataFromDB]);
+
+  // ===== Supabase Realtime 订阅 =====
+  useEffect(() => {
+    if (!isLoggedIn || !loaded) return;
+
+    const supabase = createClient();
+    const channel = supabase
+      .channel("planmate-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "cards" },
+        () => { loadDataFromDB(); },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "daily_records" },
+        () => { loadDataFromDB(); },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "todo_items" },
+        () => { loadDataFromDB(); },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isLoggedIn, loaded, loadDataFromDB]);
 
   // 滚动到今天
   useEffect(() => {
@@ -151,6 +189,15 @@ export function TimelineView() {
   const handleScroll = useCallback(() => {
     if (scrollRef.current) setScrollLeft(scrollRef.current.scrollLeft);
   }, []);
+
+  // 手动刷新
+  const [refreshing, setRefreshing] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    if (!isLoggedIn) return;
+    setRefreshing(true);
+    await loadDataFromDB();
+    setRefreshing(false);
+  }, [isLoggedIn, loadDataFromDB]);
 
   // 双击创建 Card
   const handleDoubleClick = useCallback(
@@ -172,8 +219,9 @@ export function TimelineView() {
           const { data, error } = await supabase.from("cards").insert({
             user_id: user.id, title: "新任务", start_date: formatDate(startDate), duration_days: 7, row_position: rowPosition, color_index: colorIndex,
           }).select().single();
+          if (error) console.error("[PlanMate] createCard error:", error);
           if (!error && data) addCard({ ...data, daily_records: [], todo_items: [] });
-        } catch { /* */ }
+        } catch (err) { console.error("[PlanMate] createCard exception:", err); }
       } else {
         addCard({
           id: `local-${Date.now()}`, title: "新任务", start_date: formatDate(startDate), duration_days: 7, row_position: rowPosition, color_index: colorIndex, daily_records: [], todo_items: [],
@@ -188,64 +236,76 @@ export function TimelineView() {
   const handleUpdateCard = useCallback(
     async (id: string, updates: Partial<CardData>) => {
       updateCard(id, updates);
-      if (isLoggedIn) { try { const supabase = createClient(); await supabase.from("cards").update(updates).eq("id", id); } catch { /* */ } }
+      if (isLoggedIn) {
+        try {
+          const supabase = createClient();
+          const { error } = await supabase.from("cards").update(updates).eq("id", id);
+          if (error) console.error("[PlanMate] updateCard error:", error);
+        } catch (err) { console.error("[PlanMate] updateCard exception:", err); }
+      }
     }, [updateCard, isLoggedIn],
   );
 
   const handleDeleteCard = useCallback(
     async (id: string) => {
       deleteCard(id);
-      if (isLoggedIn) { try { const supabase = createClient(); await supabase.from("cards").delete().eq("id", id); } catch { /* */ } }
+      if (isLoggedIn) {
+        try {
+          const supabase = createClient();
+          const { error } = await supabase.from("cards").delete().eq("id", id);
+          if (error) console.error("[PlanMate] deleteCard error:", error);
+        } catch (err) { console.error("[PlanMate] deleteCard exception:", err); }
+      }
     }, [deleteCard, isLoggedIn],
   );
 
-  // #10: reorder
   const handleReorderCard = useCallback(
     async (cardId: string, newRowPosition: number) => {
       reorderCard(cardId, newRowPosition);
       if (isLoggedIn) {
         try {
-          // 更新所有卡片的 row_position
           const supabase = createClient();
           const state = useTimelineStore.getState();
           for (const c of state.cards) {
-            await supabase.from("cards").update({ row_position: c.row_position }).eq("id", c.id);
+            const { error } = await supabase.from("cards").update({ row_position: c.row_position }).eq("id", c.id);
+            if (error) console.error("[PlanMate] reorderCard error:", error);
           }
-        } catch { /* */ }
+        } catch (err) { console.error("[PlanMate] reorderCard exception:", err); }
       }
     }, [reorderCard, isLoggedIn],
   );
 
-  // #13: 修复 DB 更新逻辑 - 用记录 ID 来更新而非匹配 card_id+date+row_index
+  // 更新每日记录 — 修复 DB 更新逻辑
   const handleUpdateDailyRecord = useCallback(
     async (cardId: string, date: string, rowIndex: number, updates: { content?: string; completed?: boolean }) => {
       updateDailyRecord(cardId, date, rowIndex, updates);
       if (isLoggedIn) {
         try {
           const supabase = createClient();
-          // 从 store 获取当前记录（可能已有真实 ID）
           const state = useTimelineStore.getState();
           const card = state.cards.find((c) => c.id === cardId);
           const record = card?.daily_records.find((r) => r.date === date && r.row_index === rowIndex);
 
           if (record && record.id && !record.id.startsWith("temp-")) {
             // 有真实 ID → 直接更新
-            await supabase.from("daily_records").update(updates).eq("id", record.id);
+            const { error } = await supabase.from("daily_records").update(updates).eq("id", record.id);
+            if (error) console.error("[PlanMate] updateDailyRecord error:", error);
           } else {
-            // 无真实 ID → 尝试按 card_id+date+row_index 查找
-            const { data: existing } = await supabase.from("daily_records").select("id").eq("card_id", cardId).eq("date", date).eq("row_index", rowIndex).maybeSingle();
+            // 无真实 ID → 先查找再决定 insert/update
+            const { data: existing, error: findErr } = await supabase.from("daily_records").select("id").eq("card_id", cardId).eq("date", date).eq("row_index", rowIndex).maybeSingle();
+            if (findErr) console.error("[PlanMate] findDailyRecord error:", findErr);
             if (existing) {
-              await supabase.from("daily_records").update(updates).eq("id", existing.id);
+              const { error } = await supabase.from("daily_records").update(updates).eq("id", existing.id);
+              if (error) console.error("[PlanMate] updateDailyRecord error:", error);
             } else if (updates.content) {
-              // #11: 只在有内容时插入
-              const { data: inserted } = await supabase.from("daily_records").insert({ card_id: cardId, date, row_index: rowIndex, ...updates }).select().single();
-              // 将真实 ID 写回 store
+              const { data: inserted, error } = await supabase.from("daily_records").insert({ card_id: cardId, date, row_index: rowIndex, ...updates }).select().single();
+              if (error) console.error("[PlanMate] insertDailyRecord error:", error);
               if (inserted) {
                 useTimelineStore.getState().updateDailyRecord(cardId, date, rowIndex, { id: inserted.id } as Partial<DailyRecordData>);
               }
             }
           }
-        } catch { /* */ }
+        } catch (err) { console.error("[PlanMate] updateDailyRecord exception:", err); }
       }
     }, [updateDailyRecord, isLoggedIn],
   );
@@ -253,14 +313,11 @@ export function TimelineView() {
   const handleAddDailyRow = useCallback(
     async (cardId: string, date: string) => {
       addDailyRecordRow(cardId, date);
-      // #11: 不在 DB 中插入空行，用户输入内容时再插入
     }, [addDailyRecordRow],
   );
 
-  // 删除每日记录
   const handleDeleteDailyRecord = useCallback(
     async (cardId: string, date: string, rowIndex: number) => {
-      // 先从 store 找到要删除的记录 ID
       const state = useTimelineStore.getState();
       const card = state.cards.find((c) => c.id === cardId);
       const record = card?.daily_records.find((r) => r.date === date && r.row_index === rowIndex);
@@ -271,17 +328,17 @@ export function TimelineView() {
         try {
           const supabase = createClient();
           if (record.id && !record.id.startsWith("temp-")) {
-            await supabase.from("daily_records").delete().eq("id", record.id);
+            const { error } = await supabase.from("daily_records").delete().eq("id", record.id);
+            if (error) console.error("[PlanMate] deleteDailyRecord error:", error);
           } else {
-            // 临时 ID → 按 card_id+date+row_index 删除
-            await supabase.from("daily_records").delete().eq("card_id", cardId).eq("date", date).eq("row_index", rowIndex);
+            const { error } = await supabase.from("daily_records").delete().eq("card_id", cardId).eq("date", date).eq("row_index", rowIndex);
+            if (error) console.error("[PlanMate] deleteDailyRecord error:", error);
           }
-        } catch { /* */ }
+        } catch (err) { console.error("[PlanMate] deleteDailyRecord exception:", err); }
       }
     }, [deleteDailyRecord, isLoggedIn],
   );
 
-  // #13: 同样修复 todo_items
   const handleUpdateTodoItem = useCallback(
     async (cardId: string, rowIndex: number, updates: { content?: string; completed?: boolean }) => {
       updateTodoItem(cardId, rowIndex, updates);
@@ -293,20 +350,23 @@ export function TimelineView() {
           const item = card?.todo_items.find((t) => t.row_index === rowIndex);
 
           if (item && item.id && !item.id.startsWith("temp-")) {
-            await supabase.from("todo_items").update(updates).eq("id", item.id);
+            const { error } = await supabase.from("todo_items").update(updates).eq("id", item.id);
+            if (error) console.error("[PlanMate] updateTodoItem error:", error);
           } else {
-            const { data: existing } = await supabase.from("todo_items").select("id").eq("card_id", cardId).eq("row_index", rowIndex).maybeSingle();
+            const { data: existing, error: findErr } = await supabase.from("todo_items").select("id").eq("card_id", cardId).eq("row_index", rowIndex).maybeSingle();
+            if (findErr) console.error("[PlanMate] findTodoItem error:", findErr);
             if (existing) {
-              await supabase.from("todo_items").update(updates).eq("id", existing.id);
+              const { error } = await supabase.from("todo_items").update(updates).eq("id", existing.id);
+              if (error) console.error("[PlanMate] updateTodoItem error:", error);
             } else if (updates.content) {
-              // #11: 只在有内容时插入
-              const { data: inserted } = await supabase.from("todo_items").insert({ card_id: cardId, row_index: rowIndex, ...updates }).select().single();
+              const { data: inserted, error } = await supabase.from("todo_items").insert({ card_id: cardId, row_index: rowIndex, ...updates }).select().single();
+              if (error) console.error("[PlanMate] insertTodoItem error:", error);
               if (inserted) {
                 useTimelineStore.getState().updateTodoItem(cardId, rowIndex, { id: inserted.id } as Partial<TodoItemData>);
               }
             }
           }
-        } catch { /* */ }
+        } catch (err) { console.error("[PlanMate] updateTodoItem exception:", err); }
       }
     }, [updateTodoItem, isLoggedIn],
   );
@@ -314,11 +374,9 @@ export function TimelineView() {
   const handleAddTodoRow = useCallback(
     async (cardId: string) => {
       addTodoItemRow(cardId);
-      // #11: 不在 DB 中插入空行
     }, [addTodoItemRow],
   );
 
-  // 删除待办事项
   const handleDeleteTodoItem = useCallback(
     async (cardId: string, rowIndex: number) => {
       const state = useTimelineStore.getState();
@@ -331,11 +389,13 @@ export function TimelineView() {
         try {
           const supabase = createClient();
           if (item.id && !item.id.startsWith("temp-")) {
-            await supabase.from("todo_items").delete().eq("id", item.id);
+            const { error } = await supabase.from("todo_items").delete().eq("id", item.id);
+            if (error) console.error("[PlanMate] deleteTodoItem error:", error);
           } else {
-            await supabase.from("todo_items").delete().eq("card_id", cardId).eq("row_index", rowIndex);
+            const { error } = await supabase.from("todo_items").delete().eq("card_id", cardId).eq("row_index", rowIndex);
+            if (error) console.error("[PlanMate] deleteTodoItem error:", error);
           }
-        } catch { /* */ }
+        } catch (err) { console.error("[PlanMate] deleteTodoItem exception:", err); }
       }
     }, [deleteTodoItem, isLoggedIn],
   );
@@ -354,32 +414,32 @@ export function TimelineView() {
           const supabase = createClient();
           const { data: existing } = await supabase.from("daily_records").select("row_index").eq("card_id", cardId).eq("date", targetDate);
           const maxRow = (existing || []).reduce((max: number, r: { row_index: number }) => Math.max(max, r.row_index), -1);
-          await supabase.from("daily_records").insert({
+          const { error: insertErr } = await supabase.from("daily_records").insert({
             card_id: cardId, date: targetDate, row_index: maxRow + 1,
             content: todoItem.content, completed: todoItem.completed,
           });
+          if (insertErr) console.error("[PlanMate] moveTodoToDaily insert error:", insertErr);
           if (todoItem.id && !todoItem.id.startsWith("temp-")) {
-            await supabase.from("todo_items").delete().eq("id", todoItem.id);
+            const { error } = await supabase.from("todo_items").delete().eq("id", todoItem.id);
+            if (error) console.error("[PlanMate] moveTodoToDaily delete error:", error);
           } else {
-            await supabase.from("todo_items").delete().eq("card_id", cardId).eq("row_index", todoRowIndex);
+            const { error } = await supabase.from("todo_items").delete().eq("card_id", cardId).eq("row_index", todoRowIndex);
+            if (error) console.error("[PlanMate] moveTodoToDaily delete error:", error);
           }
-        } catch { /* */ }
+        } catch (err) { console.error("[PlanMate] moveTodoToDaily exception:", err); }
       }
     }, [moveTodoToDaily, isLoggedIn],
   );
 
-  // #7: 修复退出登录
   const handleSignOut = useCallback(async () => {
     try {
       const supabase = createClient();
       await supabase.auth.signOut();
     } catch { /* */ }
-    // 清除本地状态
     setLoggedIn(false, null);
     window.location.href = "/";
   }, [setLoggedIn]);
 
-  // 登录
   const handleLogin = useCallback(async () => {
     setLoginFormError("");
     if (!loginFormEmail || !loginFormPassword) { setLoginFormError("请填写邮箱与密码"); return; }
@@ -392,7 +452,7 @@ export function TimelineView() {
     else { window.location.reload(); }
   }, [loginFormEmail, loginFormPassword, loginFormMode]);
 
-  // #10: 计算每张 Card 的 top（自动排布）
+  // 自动排布
   const sortedCards = useMemo(() => {
     return [...cards].sort((a, b) => a.row_position - b.row_position);
   }, [cards]);
@@ -402,18 +462,21 @@ export function TimelineView() {
     let currentTop = 4;
     for (const card of sortedCards) {
       positions[card.id] = currentTop;
-      currentTop += getCardHeight(card) + CARD_ROW_GAP;
+      // 优先使用 ResizeObserver 测量的实际高度，否则回退到估算
+      const h = measuredHeights[card.id] || getCardHeight(card, cellWidth);
+      currentTop += h + CARD_ROW_GAP;
     }
     return positions;
-  }, [sortedCards]);
+  }, [sortedCards, cellWidth, measuredHeights]);
 
   const today = getTodayCST();
   const todayOffset = Math.round((today.getTime() - viewportStart.getTime()) / 86400000);
   const contentHeight = useMemo(() => {
     if (sortedCards.length === 0) return 600;
     const lastCard = sortedCards[sortedCards.length - 1];
-    return (cardPositions[lastCard.id] || 0) + getCardHeight(lastCard) + 200;
-  }, [sortedCards, cardPositions]);
+    const lastHeight = measuredHeights[lastCard.id] || getCardHeight(lastCard, cellWidth);
+    return (cardPositions[lastCard.id] || 0) + lastHeight + 200;
+  }, [sortedCards, cardPositions, cellWidth, measuredHeights]);
 
   return (
     <div className="h-screen flex flex-col bg-[var(--bg)]">
@@ -421,7 +484,7 @@ export function TimelineView() {
       <div className="h-10 border-b border-[var(--border)] flex items-center justify-between px-4 shrink-0 bg-[var(--bg)] z-30">
         <div className="flex items-center gap-4">
           <span className="text-sm font-semibold tracking-tight">PlanMate</span>
-          {/* #9: 列宽滑动条 - 所有设备可见 */}
+          {/* 列宽滑动条 */}
           <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
             <span className="hidden sm:inline">列宽</span>
             <input
@@ -435,6 +498,17 @@ export function TimelineView() {
             />
             <span className="w-6 text-[var(--text-muted)]">{cellWidth}</span>
           </div>
+          {/* 手动刷新按钮 */}
+          {isLoggedIn && (
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="text-xs text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors disabled:opacity-50"
+              title="同步数据"
+            >
+              {refreshing ? "⏳" : "🔄"}
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {userEmail && <span className="text-xs text-[var(--text-muted)]">{userEmail}</span>}
