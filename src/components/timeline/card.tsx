@@ -48,8 +48,8 @@ export function TimelineCard({
   const { dragState, startDrag, cellWidth, cards, setMeasuredHeight } = useTimelineStore();
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [dropHighlightDate, setDropHighlightDate] = useState<string | null>(null);
-  // reorder 高亮
-  const [reorderTarget, setReorderTarget] = useState<"top" | "bottom" | null>(null);
+  // 边缘按钮按下状态
+  const [pressedEdge, setPressedEdge] = useState<"left" | "right" | null>(null);
 
   const color = getCardColor(card.color_index);
   const today = getTodayCST();
@@ -99,9 +99,11 @@ export function TimelineCard({
     return () => observer.disconnect();
   }, [card.id, setMeasuredHeight]);
 
-  // 拖拽 Card 标题（水平移动 + reorder）
+  // ===== 标题栏拖动 — 仅桌面端（鼠标）生效 =====
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
+      // 触摸设备不触发拖动，让手指滑动正常滚动
+      if (e.pointerType === "touch") return;
       if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "BUTTON") return;
       e.preventDefault();
       e.stopPropagation();
@@ -118,7 +120,6 @@ export function TimelineCard({
       });
 
       const startX = e.clientX;
-      const startY = e.clientY;
       let lastRowOffset = 0;
 
       function onMove(ev: PointerEvent) {
@@ -137,24 +138,26 @@ export function TimelineCard({
         let cumulativeTop = 0;
         let targetRow = card.row_position;
         for (const c of sortedCards) {
-          const cHeight = mHeights[c.id] || 100; // 回退默认值
+          const cHeight = mHeights[c.id] || 100;
           if (c.id === card.id) {
             cumulativeTop += cHeight + CARD_ROW_GAP;
             continue;
           }
-          // 如果拖动位置超过这个卡片的中点，就放到它后面
-          const cardMid = cumulativeTop + cHeight / 2;
-          const dragY = (card.row_position * (cHeight + CARD_ROW_GAP)) + dy;
-          // 简单计算：基于 dy 估算目标行
+          cumulativeTop += cHeight + CARD_ROW_GAP;
           const newRow = Math.max(0, Math.min(sortedCards.length - 1, card.row_position + Math.round(dy / (cHeight + CARD_ROW_GAP))));
           targetRow = newRow;
-          cumulativeTop += cHeight + CARD_ROW_GAP;
         }
-        lastRowOffset = Math.round(dy / 100); // 粗略估算
+        lastRowOffset = Math.round(dy / 100);
       }
 
       function onUp() {
         const store = useTimelineStore.getState();
+        // 持久化水平位移（起始日期变更）到数据库
+        const finalCard = store.cards.find((c) => c.id === card.id);
+        if (finalCard && finalCard.start_date !== card.start_date) {
+          onUpdate(card.id, { start_date: finalCard.start_date });
+        }
+        // 持久化垂直位移（排序变更）到数据库
         if (lastRowOffset !== 0) {
           const newPos = Math.max(0, Math.min(store.cards.length - 1, card.row_position + lastRowOffset));
           if (newPos !== card.row_position) {
@@ -162,7 +165,6 @@ export function TimelineCard({
           }
         }
         store.endDrag();
-        setReorderTarget(null);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
@@ -172,15 +174,17 @@ export function TimelineCard({
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
     },
-    [card.id, card.start_date, card.row_position, startDrag, onReorder],
+    [card.id, card.start_date, card.row_position, startDrag, onReorder, onUpdate],
   );
 
-  // 边缘 resize
+  // ===== 边缘拖拽 — 调整起始/终止时间（鼠标 + 触摸均支持）=====
   const handleEdgePointerDown = useCallback(
     (e: React.PointerEvent, type: "resize-left" | "resize-right") => {
       e.preventDefault();
       e.stopPropagation();
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+      setPressedEdge(type === "resize-left" ? "left" : "right");
 
       startDrag({
         cardId: card.id,
@@ -204,7 +208,19 @@ export function TimelineCard({
       }
 
       function onUp() {
-        useTimelineStore.getState().endDrag();
+        setPressedEdge(null);
+        const store = useTimelineStore.getState();
+        // 持久化起始日期/时长变更到数据库
+        const finalCard = store.cards.find((c) => c.id === card.id);
+        if (finalCard) {
+          const updates: Partial<CardData> = {};
+          if (finalCard.start_date !== card.start_date) updates.start_date = finalCard.start_date;
+          if (finalCard.duration_days !== card.duration_days) updates.duration_days = finalCard.duration_days;
+          if (Object.keys(updates).length > 0) {
+            onUpdate(card.id, updates);
+          }
+        }
+        store.endDrag();
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
@@ -214,7 +230,7 @@ export function TimelineCard({
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
     },
-    [card.id, card.start_date, card.duration_days, startDrag],
+    [card.id, card.start_date, card.duration_days, startDrag, onUpdate],
   );
 
   const isDragging = dragState.isDragging && dragState.cardId === card.id;
@@ -273,10 +289,10 @@ export function TimelineCard({
         opacity: isDragging ? 0.8 : 1,
         zIndex: isDragging ? 30 : 10,
         boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
-        touchAction: "none",
+        // 不设 touchAction:none — 让手机端手指滑动正常滚动
       }}
     >
-      {/* 标题行 - 拖动可移动卡片 */}
+      {/* 标题行 - 仅桌面端可拖动 */}
       <div
         className="flex items-center justify-between px-2 cursor-grab active:cursor-grabbing"
         style={{ height: TITLE_HEIGHT }}
@@ -429,9 +445,50 @@ export function TimelineCard({
         })}
       </div>
 
-      {/* 左右边缘 resize */}
-      <div className="hidden md:block absolute top-0 left-0 w-1.5 h-full cursor-ew-resize z-10" onPointerDown={(e) => handleEdgePointerDown(e, "resize-left")} />
-      <div className="hidden md:block absolute top-0 right-0 w-1.5 h-full cursor-ew-resize z-10" onPointerDown={(e) => handleEdgePointerDown(e, "resize-right")} />
+      {/* ===== 左右边缘按钮 — 拖拽调整起始/终止时间 ===== */}
+      {/* 左边缘：调整起始时间 */}
+      <button
+        onPointerDown={(e) => handleEdgePointerDown(e, "resize-left")}
+        className="absolute top-1/2 -translate-y-1/2 -left-3 z-20 flex items-center justify-center rounded-full shadow-sm border transition-all duration-150"
+        style={{
+          width: pressedEdge === "left" ? 24 : 18,
+          height: pressedEdge === "left" ? 24 : 18,
+          background: pressedEdge === "left" ? color.border : color.bg,
+          borderColor: pressedEdge === "left" ? color.border : "var(--border)",
+          touchAction: "none", // 按住此按钮时阻止页面滚动
+        }}
+        title="拖动调整起始时间"
+      >
+        <svg
+          viewBox="0 0 10 10"
+          style={{ width: pressedEdge === "left" ? 10 : 7, height: pressedEdge === "left" ? 10 : 7 }}
+          fill={pressedEdge === "left" ? "#fff" : "var(--text-subtle)"}
+        >
+          <path d="M7 1L3 5L7 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+
+      {/* 右边缘：调整终止时间 */}
+      <button
+        onPointerDown={(e) => handleEdgePointerDown(e, "resize-right")}
+        className="absolute top-1/2 -translate-y-1/2 -right-3 z-20 flex items-center justify-center rounded-full shadow-sm border transition-all duration-150"
+        style={{
+          width: pressedEdge === "right" ? 24 : 18,
+          height: pressedEdge === "right" ? 24 : 18,
+          background: pressedEdge === "right" ? color.border : color.bg,
+          borderColor: pressedEdge === "right" ? color.border : "var(--border)",
+          touchAction: "none",
+        }}
+        title="拖动调整终止时间"
+      >
+        <svg
+          viewBox="0 0 10 10"
+          style={{ width: pressedEdge === "right" ? 10 : 7, height: pressedEdge === "right" ? 10 : 7 }}
+          fill={pressedEdge === "right" ? "#fff" : "var(--text-subtle)"}
+        >
+          <path d="M3 1L7 5L3 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
     </div>
   );
 }
