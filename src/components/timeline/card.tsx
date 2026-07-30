@@ -120,6 +120,7 @@ export function TimelineCard({
       });
 
       const startX = e.clientX;
+      const startY = e.clientY;
       let lastRowOffset = 0;
 
       function onMove(ev: PointerEvent) {
