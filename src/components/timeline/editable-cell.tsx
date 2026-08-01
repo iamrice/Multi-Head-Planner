@@ -28,6 +28,8 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
   const [composing, setComposing] = useState(false);
   const [hovering, setHovering] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // 防止 IME 刚结束后紧接着的 Enter 被误判为"完成输入"
+  const justComposedRef = useRef(false);
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -68,7 +70,7 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && !composing) {
+    if (e.key === "Enter" && !composing && !e.nativeEvent.isComposing && !justComposedRef.current) {
       e.preventDefault();
       commitEdit();
     }
@@ -125,7 +127,14 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
           onBlur={commitEdit}
           onKeyDown={handleKeyDown}
           onCompositionStart={() => setComposing(true)}
-          onCompositionEnd={() => setComposing(false)}
+          onCompositionEnd={() => {
+            setComposing(false);
+            // 标记刚结束组合输入，防止紧接着的 Enter 误提交
+            justComposedRef.current = true;
+            requestAnimationFrame(() => {
+              justComposedRef.current = false;
+            });
+          }}
           rows={1}
           className="flex-1 min-w-0 text-xs bg-white border border-[var(--today-color)] outline-none rounded px-1 py-0 resize-none overflow-hidden leading-[18px]"
         />
