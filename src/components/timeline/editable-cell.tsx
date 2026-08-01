@@ -15,12 +15,13 @@ interface EditableCellProps {
  * 可编辑单元格
  * - 单击即可编辑
  * - 编辑时 checkbox 始终可见
- * - 支持 IME 拼音输入
+ * - 支持 IME 拼音输入（兼容各种输入法）
  * - hover 时显示完整文字 tooltip
  * - 空内容禁止打勾
  * - 空内容不上传数据库
  * - hover 时显示删除按钮
  * - 文字超出列宽时自动换行
+ * - 编辑时光标默认到末尾
  */
 export function EditableCell({ content, completed, isLastRow, onUpdate, onExpandRow, onDelete }: EditableCellProps) {
   const [editing, setEditing] = useState(false);
@@ -28,17 +29,20 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
   const [composing, setComposing] = useState(false);
   const [hovering, setHovering] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // 防止 IME 刚结束后紧接着的 Enter 被误判为"完成输入"
-  const justComposedRef = useRef(false);
+  // 记录最近一次 compositionend 的时间戳，用于防止 IME 确认后的 Enter 误提交
+  const lastComposeEndRef = useRef(0);
 
   useEffect(() => {
     if (editing && inputRef.current) {
       inputRef.current.focus();
+      // 光标放到末尾
+      const len = inputRef.current.value.length;
+      inputRef.current.setSelectionRange(len, len);
       // 自动调整高度
       inputRef.current.style.height = "auto";
       inputRef.current.style.height = inputRef.current.scrollHeight + "px";
     }
-  }, [editing, draft]);
+  }, [editing]);
 
   useEffect(() => {
     if (!editing) {
@@ -70,7 +74,15 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && !composing && !e.nativeEvent.isComposing && !justComposedRef.current) {
+    if (e.key === "Enter") {
+      // === IME 防误触三重检查 ===
+      // 1. React composing 状态
+      if (composing) return;
+      // 2. keyCode === 229 表示 IME 正在处理（部分浏览器不设 isComposing 但设此值）
+      if ((e.nativeEvent as KeyboardEvent).keyCode === 229) return;
+      // 3. compositionend 后 300ms 内的 Enter 视为 IME 确认，不提交
+      if (Date.now() - lastComposeEndRef.current < 300) return;
+
       e.preventDefault();
       commitEdit();
     }
@@ -129,11 +141,8 @@ export function EditableCell({ content, completed, isLastRow, onUpdate, onExpand
           onCompositionStart={() => setComposing(true)}
           onCompositionEnd={() => {
             setComposing(false);
-            // 标记刚结束组合输入，防止紧接着的 Enter 误提交
-            justComposedRef.current = true;
-            requestAnimationFrame(() => {
-              justComposedRef.current = false;
-            });
+            // 记录 composition 结束时间，300ms 内的 Enter 不会提交
+            lastComposeEndRef.current = Date.now();
           }}
           rows={1}
           className="flex-1 min-w-0 text-xs bg-white border border-[var(--today-color)] outline-none rounded px-1 py-0 resize-none overflow-hidden leading-[18px]"

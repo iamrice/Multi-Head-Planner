@@ -134,7 +134,12 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   userEmail: null,
   authPrompt: { show: false, dismissed: false },
   hasCreatedCard: false,
-  cellWidth: 80,
+  cellWidth: (() => {
+    try {
+      const saved = typeof window !== "undefined" ? localStorage.getItem("planmate_cell_width") : null;
+      return saved ? Number(saved) : 80;
+    } catch { return 80; }
+  })(),
 
   setCards: (cards) => set({ cards }),
   addCard: (card) => set((state) => ({ cards: [...state.cards, card] })),
@@ -355,7 +360,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   setLoggedIn: (v, email) => set({ isLoggedIn: v, userEmail: email ?? null }),
   setAuthPrompt: (s) => set((state) => ({ authPrompt: { ...state.authPrompt, ...s } })),
   setHasCreatedCard: (v) => set({ hasCreatedCard: v }),
-  setCellWidth: (w) => set({ cellWidth: w }),
+  setCellWidth: (w) => {
+    try { localStorage.setItem("planmate_cell_width", String(w)); } catch { /* */ }
+    set({ cellWidth: w });
+  },
   setMeasuredHeight: (cardId, height) =>
     set((state) => ({
       measuredHeights: { ...state.measuredHeights, [cardId]: height },
