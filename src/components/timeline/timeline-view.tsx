@@ -67,6 +67,18 @@ export function TimelineView() {
   const loadDataFromDB = useCallback(async () => {
     try {
       const supabase = createClient();
+
+      // 加载用户设置（列宽）
+      try {
+        const { data: settingsData } = await supabase
+          .from("user_settings")
+          .select("cell_width")
+          .maybeSingle();
+        if (settingsData?.cell_width) {
+          setCellWidth(settingsData.cell_width);
+        }
+      } catch { /* */ }
+
       const { data: cardsData } = await supabase.from("cards").select("*").order("row_position");
       if (cardsData && cardsData.length > 0) {
         const cardIds = cardsData.map((c: { id: string }) => c.id);
@@ -176,6 +188,28 @@ export function TimelineView() {
       supabase.removeChannel(channel);
     };
   }, [isLoggedIn, loaded, loadDataFromDB]);
+
+  // ===== 列宽变更 → 同步到数据库（防抖） =====
+  const cellWidthSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!isLoggedIn || !loaded) return;
+    if (cellWidthSyncRef.current) clearTimeout(cellWidthSyncRef.current);
+    cellWidthSyncRef.current = setTimeout(async () => {
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        await supabase
+          .from("user_settings")
+          .upsert({ user_id: user.id, cell_width: cellWidth }, { onConflict: "user_id" });
+      } catch (err) {
+        console.error("[PlanMate] syncCellWidth error:", err);
+      }
+    }, 500);
+    return () => {
+      if (cellWidthSyncRef.current) clearTimeout(cellWidthSyncRef.current);
+    };
+  }, [cellWidth, isLoggedIn, loaded]);
 
   // 滚动到今天
   useEffect(() => {
