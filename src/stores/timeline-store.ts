@@ -56,6 +56,7 @@ interface TimelineState {
   authPrompt: AuthPromptState;
   hasCreatedCard: boolean;
   cellWidth: number;
+  uiVersion: "v1" | "v2";
 
   setCards: (cards: CardData[]) => void;
   addCard: (card: CardData) => void;
@@ -78,6 +79,7 @@ interface TimelineState {
   setAuthPrompt: (s: Partial<AuthPromptState>) => void;
   setHasCreatedCard: (v: boolean) => void;
   setCellWidth: (w: number) => void;
+  setUiVersion: (v: "v1" | "v2") => void;
   setMeasuredHeight: (cardId: string, height: number) => void;
 }
 
@@ -139,6 +141,12 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       const saved = typeof window !== "undefined" ? localStorage.getItem("planmate_cell_width") : null;
       return saved ? Number(saved) : 80;
     } catch { return 80; }
+  })(),
+  uiVersion: (() => {
+    try {
+      const saved = typeof window !== "undefined" ? localStorage.getItem("planmate_ui_version") : null;
+      return saved === "v1" ? "v1" : "v2";
+    } catch { return "v2"; }
   })(),
 
   setCards: (cards) => set({ cards }),
@@ -363,6 +371,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   setCellWidth: (w) => {
     try { localStorage.setItem("planmate_cell_width", String(w)); } catch { /* */ }
     set({ cellWidth: w });
+  },
+  setUiVersion: (v) => {
+    try { localStorage.setItem("planmate_ui_version", v); } catch { /* */ }
+    set({ uiVersion: v });
   },
   setMeasuredHeight: (cardId, height) =>
     set((state) => ({

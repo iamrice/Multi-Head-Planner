@@ -13,6 +13,7 @@ import {
 } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import { signInFromClient, signUpFromClient } from "@/app/actions/auth";
+import { AiPanel } from "../ai/ai-panel";
 
 const TOTAL_DAYS = 120;
 const LOCAL_KEY = "planmate_local_cards";
@@ -61,6 +62,8 @@ export function TimelineView() {
     setAuthPrompt,
     setHasCreatedCard,
     setCellWidth,
+    uiVersion,
+    setUiVersion,
   } = useTimelineStore();
 
   // ===== 数据加载函数 =====
@@ -518,6 +521,19 @@ export function TimelineView() {
       <div className="h-10 border-b border-[var(--border)] flex items-center justify-between px-4 shrink-0 bg-[var(--bg)] z-30">
         <div className="flex items-center gap-4">
           <span className="text-sm font-semibold tracking-tight">PlanMate</span>
+          {/* 版本切换 */}
+          <div className="flex items-center bg-[var(--bg-subtle)] rounded text-[10px] overflow-hidden">
+            <button
+              onClick={() => setUiVersion("v1")}
+              className={`px-1.5 py-0.5 transition-colors ${uiVersion === "v1" ? "bg-[var(--today-color)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text)]"}`}
+              title="基础版（手动编辑）"
+            >v1</button>
+            <button
+              onClick={() => setUiVersion("v2")}
+              className={`px-1.5 py-0.5 transition-colors ${uiVersion === "v2" ? "bg-[var(--today-color)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text)]"}`}
+              title="AI 助手版"
+            >v2</button>
+          </div>
           {/* 列宽滑动条 */}
           <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
             <span className="hidden sm:inline">列宽</span>
@@ -619,6 +635,9 @@ export function TimelineView() {
           ))}
         </div>
       </div>
+
+      {/* AI 助手面板（仅 v2 + 已登录） */}
+      {uiVersion === "v2" && isLoggedIn && <AiPanel onRefresh={handleRefresh} />}
     </div>
   );
 }
