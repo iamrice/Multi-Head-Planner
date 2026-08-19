@@ -110,8 +110,9 @@ export function getCardHeight(card: CardData, _cellWidth = 80): number {
     }, {})
   ));
   const todoRows = Math.max(1, card.todo_items.reduce((max, t) => Math.max(max, t.row_index + 1), 0));
-  // 额外 +1 行给每个日期的空输入行
-  return TITLE_HEIGHT + (maxDailyRows + 1) * ROW_HEIGHT + 2 + TODO_HEADER_HEIGHT + (todoRows + 1) * ROW_HEIGHT + 4;
+  // 水平布局：取每日行数和待办行数的最大值
+  const maxRows = Math.max(maxDailyRows + 1, todoRows + 1);
+  return TITLE_HEIGHT + 16 + maxRows * ROW_HEIGHT + 4;
 }
 
 export const useTimelineStore = create<TimelineState>((set, get) => ({
@@ -130,7 +131,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   scrollOffset: 0,
   viewportStart: (() => {
     const today = getTodayCST();
-    return addDays(today, -14);
+    return addDays(today, -30);
   })(),
   isLoggedIn: null,
   userEmail: null,

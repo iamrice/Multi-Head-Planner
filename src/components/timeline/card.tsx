@@ -13,6 +13,8 @@ import {
   getTodayCST,
 } from "@/lib/utils";
 
+const TODO_COL_WIDTH = 120;
+
 interface TimelineCardProps {
   card: CardData;
   top: number;
@@ -50,6 +52,11 @@ export function TimelineCard({
   const [dropHighlightDate, setDropHighlightDate] = useState<string | null>(null);
   // 边缘按钮按下状态
   const [pressedEdge, setPressedEdge] = useState<"left" | "right" | null>(null);
+  // 检测是否为桌面设备（用于 draggable 属性）
+  const [isDesktop, setIsDesktop] = useState(false);
+  useEffect(() => {
+    setIsDesktop(window.matchMedia("(pointer: fine)").matches);
+  }, []);
 
   const color = getCardColor(card.color_index);
   const today = getTodayCST();
@@ -58,7 +65,7 @@ export function TimelineCard({
     (parseDate(card.start_date).getTime() - viewportStart.getTime()) / 86400000,
   );
   const left = startOffset * cellWidth;
-  const width = card.duration_days * cellWidth;
+  const width = card.duration_days * cellWidth + TODO_COL_WIDTH;
 
   const cardDates = useMemo(() => {
     const start = parseDate(card.start_date);
@@ -365,85 +372,88 @@ export function TimelineCard({
         </div>
       )}
 
-      {/* ===== 上半部：每日记录 ===== */}
-      <div className="flex" style={{ minHeight: maxDailyRows * ROW_HEIGHT }}>
-        {cardDates.map((date) => {
-          const dateStr = formatDate(date);
-          const isToday = isSameDay(date, today);
-          const isDropTarget = dropHighlightDate === dateStr;
-          const rowsForThisDate = dailyRowsByDate[dateStr] || 1;
+      {/* ===== 主体：每日记录（左）+ 待办清单（右）===== */}
+      <div className="flex" style={{ minHeight: Math.max(maxDailyRows * ROW_HEIGHT, (todoRowCount + 1) * ROW_HEIGHT) }}>
+        {/* 每日记录 */}
+        <div className="flex" style={{ width: card.duration_days * cellWidth }}>
+          {cardDates.map((date) => {
+            const dateStr = formatDate(date);
+            const isToday = isSameDay(date, today);
+            const isDropTarget = dropHighlightDate === dateStr;
+            const rowsForThisDate = dailyRowsByDate[dateStr] || 1;
 
-          return (
-            <div
-              key={dateStr}
-              className={`flex-1 border-l border-[var(--border-light)] first:border-l-0 transition-colors ${
-                isDropTarget ? "bg-[var(--today-color)]/10" : ""
-              }`}
-              style={{ width: cellWidth, minWidth: cellWidth, maxWidth: cellWidth }}
-              onDragOver={(e) => handleDailyCellDragOver(e, dateStr)}
-              onDragLeave={handleDailyCellDragLeave}
-              onDrop={(e) => handleDailyCellDrop(e, dateStr)}
-            >
+            return (
               <div
-                className={`text-center text-[9px] leading-4 border-b border-[var(--border-light)] ${
-                  isToday ? "text-[var(--today-color)] font-semibold bg-[var(--today-color)]/5" : "text-[var(--text-subtle)]"
+                key={dateStr}
+                className={`flex-1 border-l border-[var(--border-light)] first:border-l-0 transition-colors ${
+                  isDropTarget ? "bg-[var(--today-color)]/10" : ""
                 }`}
+                style={{ width: cellWidth, minWidth: cellWidth, maxWidth: cellWidth }}
+                onDragOver={(e) => handleDailyCellDragOver(e, dateStr)}
+                onDragLeave={handleDailyCellDragLeave}
+                onDrop={(e) => handleDailyCellDrop(e, dateStr)}
               >
-                {date.getDate()}
+                <div
+                  className={`text-center text-[9px] leading-4 border-b border-[var(--border-light)] ${
+                    isToday ? "text-[var(--today-color)] font-semibold bg-[var(--today-color)]/5" : "text-[var(--text-subtle)]"
+                  }`}
+                >
+                  {date.getDate()}
+                </div>
+                {Array.from({ length: rowsForThisDate }, (_, rowIdx) => {
+                  const record = card.daily_records.find(
+                    (r) => r.date === dateStr && r.row_index === rowIdx,
+                  );
+                  return (
+                    <div key={rowIdx} style={{ minHeight: ROW_HEIGHT }} className="border-b border-[var(--border-light)] last:border-b-0">
+                      <EditableCell
+                        content={record?.content || ""}
+                        completed={record?.completed || false}
+                        isLastRow={rowIdx === rowsForThisDate - 1}
+                        onUpdate={(updates) => onUpdateDailyRecord(card.id, dateStr, rowIdx, updates)}
+                        onExpandRow={() => onAddDailyRow(card.id, dateStr)}
+                        onDelete={record?.content ? () => onDeleteDailyRecord(card.id, dateStr, rowIdx) : undefined}
+                      />
+                    </div>
+                  );
+                })}
               </div>
-              {Array.from({ length: rowsForThisDate }, (_, rowIdx) => {
-                const record = card.daily_records.find(
-                  (r) => r.date === dateStr && r.row_index === rowIdx,
-                );
-                return (
-                  <div key={rowIdx} style={{ minHeight: ROW_HEIGHT }} className="border-b border-[var(--border-light)] last:border-b-0">
-                    <EditableCell
-                      content={record?.content || ""}
-                      completed={record?.completed || false}
-                      isLastRow={rowIdx === rowsForThisDate - 1}
-                      onUpdate={(updates) => onUpdateDailyRecord(card.id, dateStr, rowIdx, updates)}
-                      onExpandRow={() => onAddDailyRow(card.id, dateStr)}
-                      onDelete={record?.content ? () => onDeleteDailyRecord(card.id, dateStr, rowIdx) : undefined}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* 分隔线 */}
-      <div className="border-t-2 border-dashed border-[var(--border)] mx-2 my-0.5" />
-
-      {/* ===== 下半部：待办清单 ===== */}
-      <div className="px-1">
-        <div className="text-[10px] font-medium text-[var(--text-muted)] px-1 leading-5 select-none">
-          待办清单
+            );
+          })}
         </div>
-        {Array.from({ length: todoRowCount }, (_, rowIdx) => {
-          const item = card.todo_items.find((t) => t.row_index === rowIdx);
-          const hasContent = !!(item && item.content);
-          return (
-            <div
-              key={rowIdx}
-              style={{ minHeight: ROW_HEIGHT }}
-              className={`border-b border-[var(--border-light)] last:border-b-0 ${hasContent ? "cursor-grab" : ""}`}
-              draggable={hasContent ? true : false}
-              onDragStart={(e) => handleTodoDragStart(e, rowIdx)}
-              onDragEnd={handleTodoDragEnd}
-            >
-              <EditableCell
-                content={item?.content || ""}
-                completed={item?.completed || false}
-                isLastRow={rowIdx === todoRowCount - 1}
-                onUpdate={(updates) => onUpdateTodoItem(card.id, rowIdx, updates)}
-                onExpandRow={() => onAddTodoRow(card.id)}
-                onDelete={hasContent ? () => onDeleteTodoItem(card.id, rowIdx) : undefined}
-              />
-            </div>
-          );
-        })}
+
+        {/* 待办清单列（最右端） */}
+        <div
+          className="border-l-2 border-dashed border-[var(--border)]"
+          style={{ width: TODO_COL_WIDTH, minWidth: TODO_COL_WIDTH }}
+        >
+          <div className="text-center text-[9px] leading-4 border-b border-[var(--border-light)] text-[var(--text-muted)] font-medium select-none">
+            待办
+          </div>
+          {Array.from({ length: todoRowCount }, (_, rowIdx) => {
+            const item = card.todo_items.find((t) => t.row_index === rowIdx);
+            const hasContent = !!(item && item.content);
+            return (
+              <div
+                key={rowIdx}
+                style={{ minHeight: ROW_HEIGHT }}
+                className={`border-b border-[var(--border-light)] last:border-b-0 ${hasContent && isDesktop ? "cursor-grab" : ""}`}
+                draggable={hasContent && isDesktop}
+                onDragStart={(e) => handleTodoDragStart(e, rowIdx)}
+                onDragEnd={handleTodoDragEnd}
+              >
+                <EditableCell
+                  content={item?.content || ""}
+                  completed={item?.completed || false}
+                  isLastRow={rowIdx === todoRowCount - 1}
+                  onUpdate={(updates) => onUpdateTodoItem(card.id, rowIdx, updates)}
+                  onExpandRow={() => onAddTodoRow(card.id)}
+                  onDelete={hasContent ? () => onDeleteTodoItem(card.id, rowIdx) : undefined}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* ===== 左右边缘按钮 — 拖拽调整起始/终止时间 ===== */}

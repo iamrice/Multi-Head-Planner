@@ -33,6 +33,11 @@ body {
 }
 
 /* 自定义滚动条 */
+.timeline-scroll {
+  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
+}
+
 .timeline-scroll::-webkit-scrollbar {
   height: 8px;
   width: 8px;

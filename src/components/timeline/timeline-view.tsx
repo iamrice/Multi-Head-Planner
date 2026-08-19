@@ -15,7 +15,7 @@ import { createClient } from "@/lib/supabase/client";
 import { signInFromClient, signUpFromClient } from "@/app/actions/auth";
 import { AiPanel } from "../ai/ai-panel";
 
-const TOTAL_DAYS = 120;
+const TOTAL_DAYS = 365;
 const LOCAL_KEY = "planmate_local_cards";
 
 function saveLocalCards(cards: CardData[]) {
@@ -37,6 +37,8 @@ export function TimelineView() {
   const [loginFormMode, setLoginFormMode] = useState<"login" | "signup">("signup");
   const [loginFormError, setLoginFormError] = useState("");
   const [loginFormPending, setLoginFormFormPending] = useState(false);
+  const [todayTaskCount, setTodayTaskCount] = useState(0);
+  const notifiedRef = useRef(false);
 
   const {
     cards,
@@ -64,6 +66,7 @@ export function TimelineView() {
     setCellWidth,
     uiVersion,
     setUiVersion,
+    setViewportStart,
   } = useTimelineStore();
 
   // ===== 数据加载函数 =====
@@ -113,18 +116,33 @@ export function TimelineView() {
           todosByCard[cid]!.push(t);
         });
 
-        setCards(
-          cardsData.map((c: Record<string, unknown>) => ({
-            id: c.id as string,
-            title: c.title as string,
-            start_date: c.start_date as string,
-            duration_days: c.duration_days as number,
-            row_position: c.row_position as number,
-            color_index: c.color_index as number,
-            daily_records: ((recordsByCard[c.id as string] || []) as DailyRecordData[]).filter((r) => r.content !== ""),
-            todo_items: ((todosByCard[c.id as string] || []) as TodoItemData[]).filter((t) => t.content !== ""),
-          })),
-        );
+        const loadedCards: CardData[] = cardsData.map((c: Record<string, unknown>) => ({
+          id: c.id as string,
+          title: c.title as string,
+          start_date: c.start_date as string,
+          duration_days: c.duration_days as number,
+          row_position: c.row_position as number,
+          color_index: c.color_index as number,
+          daily_records: ((recordsByCard[c.id as string] || []) as DailyRecordData[]).filter((r) => r.content !== ""),
+          todo_items: ((todosByCard[c.id as string] || []) as TodoItemData[]).filter((t) => t.content !== ""),
+        }));
+
+        // #3: 自动调整卡片终点到今天+2天
+        const today = getTodayCST();
+        const targetEnd = addDays(today, 2);
+        for (const card of loadedCards) {
+          const cardEnd = addDays(parseDate(card.start_date), card.duration_days - 1);
+          if (cardEnd < targetEnd) {
+            const newDuration = Math.round((targetEnd.getTime() - parseDate(card.start_date).getTime()) / 86400000) + 1;
+            card.duration_days = newDuration;
+            // 同步到数据库
+            supabase.from("cards").update({ duration_days: newDuration }).eq("id", card.id).then(({ error }) => {
+              if (error) console.error("[PlanMate] autoExtend error:", error);
+            });
+          }
+        }
+
+        setCards(loadedCards);
       } else {
         setCards([]);
       }
@@ -156,7 +174,17 @@ export function TimelineView() {
       if (loggedIn) {
         await loadDataFromDB();
       } else {
-        setCards(loadLocalCards());
+        const localCards = loadLocalCards();
+        // #3: 本地卡片也自动延长终点到今天+2天
+        const today = getTodayCST();
+        const targetEnd = addDays(today, 2);
+        for (const card of localCards) {
+          const cardEnd = addDays(parseDate(card.start_date), card.duration_days - 1);
+          if (cardEnd < targetEnd) {
+            card.duration_days = Math.round((targetEnd.getTime() - parseDate(card.start_date).getTime()) / 86400000) + 1;
+          }
+        }
+        setCards(localCards);
       }
       setLoaded(true);
     }
@@ -222,6 +250,45 @@ export function TimelineView() {
       scrollRef.current.scrollLeft = Math.max(0, todayOffset * cellWidth - 300);
     }
   }, [viewportStart, loaded, cellWidth]);
+
+  // #5: 日程提醒 — 计算今日未完成任务 + 浏览器通知
+  useEffect(() => {
+    if (!loaded) return;
+    const todayStr = formatDate(getTodayCST());
+    const dueToday = cards.reduce(
+      (sum, card) => sum + card.daily_records.filter((r) => r.date === todayStr && !r.completed && r.content).length,
+      0,
+    );
+    setTodayTaskCount(dueToday);
+
+    if (dueToday > 0 && !notifiedRef.current) {
+      notifiedRef.current = true;
+      if (typeof Notification !== "undefined") {
+        if (Notification.permission === "granted") {
+          new Notification("PlanMate 日程提醒", { body: `今天有 ${dueToday} 项未完成任务` });
+        } else if (Notification.permission === "default") {
+          Notification.requestPermission().then((perm) => {
+            if (perm === "granted") {
+              new Notification("PlanMate 日程提醒", { body: `今天有 ${dueToday} 项未完成任务` });
+            }
+          });
+        }
+      }
+    }
+  }, [loaded, cards]);
+
+  // 动态扩展视口：确保所有卡片的起始日期都可见可滚动
+  useEffect(() => {
+    if (cards.length === 0) return;
+    const earliest = cards.reduce((min, card) => {
+      const start = parseDate(card.start_date);
+      return start < min ? start : min;
+    }, viewportStart);
+    // 如果最早卡片日期早于当前视口起始，向左扩展（留1天余量）
+    if (earliest < viewportStart) {
+      setViewportStart(addDays(earliest, -1));
+    }
+  }, [cards, viewportStart, setViewportStart]);
 
   const handleScroll = useCallback(() => {
     if (scrollRef.current) setScrollLeft(scrollRef.current.scrollLeft);
@@ -558,6 +625,13 @@ export function TimelineView() {
             >
               {refreshing ? "⏳" : "🔄"}
             </button>
+          )}
+          {/* 日程提醒 */}
+          {todayTaskCount > 0 && (
+            <span className="flex items-center gap-0.5 text-xs text-[var(--today-color)]" title={`今天有 ${todayTaskCount} 项未完成任务`}>
+              🔔
+              <span className="bg-[var(--today-color)] text-white text-[9px] rounded-full px-1 leading-tight">{todayTaskCount}</span>
+            </span>
           )}
         </div>
         <div className="flex items-center gap-3">
